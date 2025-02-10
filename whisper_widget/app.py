@@ -64,7 +64,7 @@ class SpeechToTextApp:
         )
         self.app.connect("activate", self.on_activate)
 
-        # Initialize settings
+        # Initialize settings with more sensitive defaults
         self.settings = {
             'transcription_mode': transcription_mode,
             'model_size': model_size,
@@ -72,15 +72,15 @@ class SpeechToTextApp:
             'vad_sensitivity': vad_sensitivity,
             'auto_detect_speech': auto_detect_speech,
             'add_punctuation': add_punctuation,
-            'min_speech_duration': 0.5,  # seconds
-            'max_silence_duration': 1.0,  # seconds
-            'min_audio_length': 1.0,  # seconds
-            'speech_threshold': 0.5,  # 0.0-1.0
-            'silence_threshold': 10,  # silence threshold
-            'speech_start_chunks': 2,  # consecutive chunks to start
-            'noise_reduce_threshold': 0.1,  # 0.0-1.0
+            'sample_rate': 16000,
+            'min_speech_duration': 0.2,  # Reduced from 0.5
+            'max_silence_duration': 0.5,  # Reduced from 1.0
+            'min_audio_length': 0.3,  # Reduced from 1.0
+            'speech_threshold': 0.5,
+            'silence_threshold': 5,  # Reduced from 10
+            'speech_start_chunks': 1,  # Reduced from 2
+            'noise_reduce_threshold': 0.1,
             'openai_api_key': openai_api_key,
-            'sample_rate': 16000,  # Fixed for Whisper
         }
         
         # Store instance attributes for compatibility with tests
