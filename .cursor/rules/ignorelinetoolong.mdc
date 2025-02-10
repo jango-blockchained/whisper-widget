@@ -1,0 +1,8 @@
+---
+description: ignore Pylint or Flake8 -  line too long
+globs: *.py
+---
+
+# Linter Rules
+
+- Ignore line to long

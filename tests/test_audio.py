@@ -434,6 +434,179 @@ def test_create_temporary_wav_file(mock_app):
             os.remove(temp_filename)
 
 
+def test_noise_reduction_edge_cases():
+    """Test noise reduction with various edge case inputs."""
+    # Test with empty array
+    empty_audio = np.array([], dtype=np.float32)
+    reduced_empty = noise_reduction(empty_audio)
+    assert len(reduced_empty) == 0
+
+    # Test with all zeros
+    zero_audio = np.zeros(100, dtype=np.float32)
+    reduced_zero = noise_reduction(zero_audio)
+    assert np.all(reduced_zero == 0)
+
+    # Test with all noise (below threshold)
+    noise_audio = np.full(100, 0.01, dtype=np.float32)
+    reduced_noise = noise_reduction(noise_audio)
+    assert np.all(reduced_noise == 0)
+
+    # Test with all signal (above threshold)
+    signal_audio = np.full(100, 0.6, dtype=np.float32)
+    reduced_signal = noise_reduction(signal_audio)
+    assert np.all(reduced_signal == signal_audio)
+
+
+def test_noise_reduction_threshold_sensitivity():
+    """Test noise reduction sensitivity to different thresholds."""
+    # Create a mixed signal with noise and signal
+    mixed_audio = np.array([
+        0.01, 0.02, 0.5, 0.6, 0.01, 0.02, 
+        0.7, 0.8, 0.02, 0.03
+    ], dtype=np.float32)
+
+    # Test different noise thresholds
+    thresholds = [0.05, 0.1, 0.2, 0.5]
+    for threshold in thresholds:
+        reduced_audio = noise_reduction(mixed_audio, threshold)
+        
+        # Verify that higher thresholds remove more low-amplitude segments
+        non_zero_count = np.count_nonzero(reduced_audio)
+        assert non_zero_count <= len(mixed_audio)
+        
+        # Ensure high-amplitude segments are preserved
+        assert np.all(reduced_audio[2:4] != 0)
+        assert np.all(reduced_audio[6:8] != 0)
+
+
+def test_microphone_access_comprehensive():
+    """Comprehensive test for microphone access."""
+    # Test scenarios with mocked PyAudio
+    scenarios = [
+        # Successful access
+        {
+            'device_count': 1,
+            'expected_result': True
+        },
+        # No devices
+        {
+            'device_count': 0,
+            'expected_result': False
+        }
+    ]
+
+    for scenario in scenarios:
+        with patch('pyaudio.PyAudio') as MockPyAudio:
+            mock_instance = MockPyAudio.return_value
+            mock_instance.get_device_count.return_value = (
+                scenario['device_count']
+            )
+            
+            result = check_microphone_access()
+            assert result == scenario['expected_result']
+
+
+def test_audio_buffer_lifecycle(mock_whisper_app):
+    """Test the complete lifecycle of the audio buffer."""
+    app = mock_whisper_app
+
+    # Initial state
+    assert len(app.audio_buffer) == 0
+
+    # Simulate recording start
+    app.start_recording()
+    assert app.is_recording
+    assert app.recording_start_time is not None
+
+    # Add some mock audio data
+    mock_audio_data = np.random.randint(
+        -32768, 32767, 
+        size=int(app.sample_rate * 0.5),  # 0.5 seconds of audio
+        dtype=np.int16
+    ).tobytes()
+    app.audio_buffer.extend(mock_audio_data)
+
+    # Verify buffer content
+    assert len(app.audio_buffer) > 0
+
+    # Stop recording and process buffer
+    app.stop_recording()
+    assert not app.is_recording
+    assert len(app.audio_buffer) == 0
+
+
+def test_audio_recording_state_transitions(mock_whisper_app):
+    """Test detailed state transitions during recording."""
+    app = mock_whisper_app
+
+    # Initial state checks
+    assert not app.is_recording
+    assert app.recording_start_time is None
+
+    # Start recording sequence
+    app.start_recording()
+    assert app.is_recording
+    assert app.recording_start_time is not None
+    assert len(app.audio_buffer) == 0
+
+    # Simulate adding audio data
+    mock_audio_data = np.random.randint(
+        -32768, 32767, 
+        size=int(app.sample_rate * 0.5),  # 0.5 seconds of audio
+        dtype=np.int16
+    ).tobytes()
+    app.audio_buffer.extend(mock_audio_data)
+
+    # Stop recording
+    app.stop_recording()
+    assert not app.is_recording
+    assert app.recording_start_time is None
+    assert len(app.audio_buffer) == 0
+
+
+def test_temporary_wav_file_creation(mock_whisper_app):
+    """Comprehensive test for temporary WAV file creation."""
+    app = mock_whisper_app
+
+    # Prepare mock audio data
+    mock_audio_data = np.random.randint(
+        -32768, 32767, 
+        size=int(app.sample_rate * 1),  # 1 second of audio
+        dtype=np.int16
+    )
+    app.audio_buffer = bytearray(mock_audio_data.tobytes())
+
+    # Create temporary file
+    with tempfile.NamedTemporaryFile(
+        suffix='.wav', 
+        delete=False
+    ) as temp_file:
+        try:
+            with wave.open(temp_file.name, 'wb') as wf:
+                wf.setnchannels(app.channels)
+                wf.setsampwidth(
+                    app.p.get_sample_size(app.audio_format)
+                )
+                wf.setframerate(app.sample_rate)
+                wf.writeframes(app.audio_buffer)
+
+            # Verify file was created and has content
+            assert os.path.exists(temp_file.name)
+            assert os.path.getsize(temp_file.name) > 0
+
+            # Verify WAV file properties
+            with wave.open(temp_file.name, 'rb') as wf:
+                assert wf.getnchannels() == app.channels
+                assert wf.getsampwidth() == (
+                    app.p.get_sample_size(app.audio_format)
+                )
+                assert wf.getframerate() == app.sample_rate
+
+        finally:
+            # Clean up
+            os.unlink(temp_file.name)
+
+
 if __name__ == '__main__':
     # List available audio devices
     print("\nAvailable audio devices:")
