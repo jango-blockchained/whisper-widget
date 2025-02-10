@@ -883,82 +883,203 @@ class SpeechToTextApp:
 
     # ------------------------------
     def audio_loop(self) -> None:
-        """Process audio input in a loop."""
-        if not self.has_mic_access or not self.vad:
-            print("Cannot start audio loop - missing microphone access or VAD")
+        """Main audio processing loop with enhanced error handling and quality checks."""
+        if not hasattr(self, 'stream') or not self.stream:
+            logging.error("Audio stream not initialized")
             return
 
-        try:
-            stream = self.p.open(
-                format=self.audio_format,
-                channels=self.channels,
-                rate=self.sample_rate,
-                input=True,
-                frames_per_buffer=self.chunk_size
-            )
-        except Exception as e:
-            print(f"Error opening audio stream: {e}")
-            return
+        error_count = 0
+        max_errors = 5
+        last_error_time = 0
+        error_reset_interval = 60  # Reset error count after 60 seconds
 
-        while self.running:
+        while self.is_recording:
             try:
-                data = stream.read(self.chunk_size)
-                if not data:
+                # Check if we need to reset error count
+                current_time = time.time()
+                if current_time - last_error_time > error_reset_interval:
+                    error_count = 0
+
+                # Read audio chunk with timeout
+                try:
+                    audio_chunk = self.stream.read(
+                        self.chunk_size,
+                        exception_on_overflow=False
+                    )
+                except (OSError, IOError) as e:
+                    error_count += 1
+                    last_error_time = current_time
+                    logging.warning(f"Error reading audio chunk: {e}")
+                    
+                    if error_count >= max_errors:
+                        logging.error("Too many audio read errors, stopping recording")
+                        self.stop_recording()
+                        break
+                        
+                    time.sleep(0.1)  # Brief pause before retry
                     continue
 
-                # Add audio data to wake word detection queue
-                self.audio_buffer_ww.put(data)
+                # Validate audio chunk
+                if not audio_chunk or len(audio_chunk) != self.chunk_size * 2:
+                    logging.warning("Invalid audio chunk received")
+                    continue
 
-                # Only process for speech if recording or auto-detect is on
-                if self.is_recording or self.auto_detect_speech:
-                    # Check for speech
+                # Convert to numpy array for analysis
+                try:
+                    audio_data = np.frombuffer(audio_chunk, dtype=np.int16)
+                except ValueError as e:
+                    logging.warning(f"Error converting audio chunk: {e}")
+                    continue
+
+                # Check audio quality
+                if self._check_audio_quality(audio_data):
+                    # Apply noise reduction
                     try:
-                        is_speech = self.vad.is_speech(
-                            data,
-                            sample_rate=self.sample_rate
+                        processed_chunk = noise_reduction(
+                            audio_chunk,
+                            self.sample_rate,
+                            self.settings['noise_reduce_threshold']
                         )
                     except Exception as e:
-                        print(f"VAD error: {e}")
-                        continue
+                        logging.warning(f"Error in noise reduction: {e}")
+                        processed_chunk = audio_chunk  # Use original on error
 
-                    if is_speech:
-                        self.audio_buffer.extend(data)
-                    elif len(self.audio_buffer) > 0:
-                        # Process the buffer if we have enough audio
-                        if len(self.audio_buffer) >= self.min_audio_length * self.sample_rate:
-                            self.process_audio()
-                        self.audio_buffer = bytearray()
-                        
-                        # Reset wake word detection after processing
-                        if self.wake_word_detected:
-                            self.wake_word_detected = False
+                    # Detect speech if VAD is available
+                    is_speech = False
+                    if self.vad:
+                        try:
+                            is_speech = self.vad.is_speech(
+                                processed_chunk,
+                                self.sample_rate
+                            )
+                        except Exception as e:
+                            logging.warning(f"VAD error: {e}")
+                            # Fall back to energy-based detection
+                            is_speech = self._detect_speech_energy(audio_data)
+                    else:
+                        # Use energy-based detection if no VAD
+                        is_speech = self._detect_speech_energy(audio_data)
+
+                    # Update speech state
+                    self._update_speech_state(is_speech, processed_chunk)
 
             except Exception as e:
-                print(f"Error in audio loop: {e}")
-                time.sleep(0.1)
+                error_count += 1
+                last_error_time = time.time()
+                logging.error(f"Error in audio processing loop: {e}")
+                
+                if error_count >= max_errors:
+                    logging.error("Too many errors in audio loop, stopping recording")
+                    self.stop_recording()
+                    break
+                    
+                time.sleep(0.1)  # Brief pause before retry
 
+        # Cleanup
         try:
-            stream.stop_stream()
-            stream.close()
+            self.stream.stop_stream()
         except Exception as e:
-            print(f"Error closing audio stream: {e}")
+            logging.error(f"Error stopping audio stream: {e}")
 
-    # ------------------------------
-    def process_audio_chunk(self, audio_data):
+    def _check_audio_quality(self, audio_data: np.ndarray) -> bool:
         """
-        Process an audio chunk with noise reduction.
+        Check audio quality metrics.
         
         Args:
-            audio_data (bytes): Audio chunk to process
+            audio_data: Numpy array of audio samples
+            
+        Returns:
+            bool: True if audio quality is acceptable
         """
-        # Apply noise reduction
-        reduced_audio = noise_reduction(
-            audio_data, 
-            threshold=self.settings['noise_reduce_threshold']
-        )
+        try:
+            # Check for silence/low volume
+            rms = np.sqrt(np.mean(audio_data**2))
+            if rms < self.settings.get('min_volume', 100):
+                return False
+
+            # Check for clipping
+            max_amplitude = np.max(np.abs(audio_data))
+            if max_amplitude > 0.95 * np.iinfo(np.int16).max:
+                return False
+
+            # Check for DC offset
+            mean_amplitude = np.mean(audio_data)
+            if abs(mean_amplitude) > 1000:  # Arbitrary threshold
+                return False
+
+            return True
+            
+        except Exception as e:
+            logging.warning(f"Error in audio quality check: {e}")
+            return True  # Default to accepting audio on error
+
+    def _detect_speech_energy(self, audio_data: np.ndarray) -> bool:
+        """
+        Detect speech using energy-based method.
         
-        # Add to audio buffer or process further
-        self.audio_buffer.extend(reduced_audio)
+        Args:
+            audio_data: Numpy array of audio samples
+            
+        Returns:
+            bool: True if speech is detected
+        """
+        try:
+            energy = np.mean(audio_data**2)
+            threshold = self.settings.get('speech_energy_threshold', 1000)
+            return energy > threshold
+            
+        except Exception as e:
+            logging.warning(f"Error in energy-based speech detection: {e}")
+            return False
+
+    def _update_speech_state(
+        self,
+        is_speech: bool,
+        processed_chunk: bytes
+    ) -> None:
+        """
+        Update speech detection state and handle transitions.
+        
+        Args:
+            is_speech: Whether current chunk contains speech
+            processed_chunk: Processed audio chunk
+        """
+        try:
+            current_time = time.time()
+            
+            if is_speech:
+                if not self.is_speech:  # Speech start
+                    self.is_speech = True
+                    self.speech_start = current_time
+                    self.silence_start = None
+                    self.processed_chunks = []
+                
+                self.processed_chunks.append(processed_chunk)
+                
+            else:  # No speech
+                if self.is_speech:  # Potential speech end
+                    if not self.silence_start:
+                        self.silence_start = current_time
+                        
+                    silence_duration = current_time - self.silence_start
+                    if silence_duration >= self.settings['max_silence_duration']:
+                        # Speech segment complete
+                        if (current_time - self.speech_start >=
+                                self.settings['min_speech_duration']):
+                            self._process_speech_segment()
+                        
+                        self.is_speech = False
+                        self.speech_start = None
+                        self.processed_chunks = []
+                    else:
+                        # Still in speech segment, keep chunk
+                        self.processed_chunks.append(processed_chunk)
+                
+                else:  # Continued silence
+                    self.silence_start = current_time
+                    
+        except Exception as e:
+            logging.error(f"Error updating speech state: {e}")
 
     def process_audio(self) -> None:
         """Process the recorded audio buffer."""
