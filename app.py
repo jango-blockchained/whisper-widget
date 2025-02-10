@@ -81,21 +81,19 @@ def load_settings() -> Dict[str, Any]:
     config_dir = Path.home() / '.config' / 'whisper-widget'
     config_file = config_dir / 'config.json'
     default_settings: Dict[str, Any] = {
-        'transcription_mode': 'continuous',  # or 'clipboard'
+        'transcription_mode': 'local',  # local or openai
         'model_size': 'base',  # tiny, base, small, medium, large
-        'language': 'en',  # Default to English instead of auto
+        'language': 'en',  # language code
         'vad_sensitivity': 3,  # 1-3
         'auto_detect_speech': True,
         'add_punctuation': True,
-        'sample_rate': 16000,
-        # Speech detection parameters
-        'min_speech_duration': 0.5,  # Minimum duration (seconds) to consider as speech
-        'max_silence_duration': 1.0,  # Maximum silence duration (seconds) before stopping
-        'min_audio_length': 1.0,  # Minimum audio segment length (seconds) to process
-        'speech_threshold': 0.5,  # Speech probability threshold (0.0-1.0)
-        'silence_threshold': 10,  # Number of silent chunks before stopping
-        'speech_start_chunks': 2,  # Number of speech chunks to trigger recording
-        'noise_reduce_threshold': 0.1,  # Noise reduction sensitivity (0.0-1.0)
+        'min_speech_duration': 0.5,  # seconds
+        'max_silence_duration': 1.0,  # seconds
+        'min_audio_length': 1.0,  # seconds
+        'speech_threshold': 0.5,  # 0.0-1.0
+        'silence_threshold': 10,  # Changed from 400 to 10
+        'speech_start_chunks': 2,  # number of consecutive speech chunks to start recording
+        'noise_reduce_threshold': 0.1  # 0.0-1.0
     }
     
     if config_file.exists():
