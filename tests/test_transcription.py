@@ -1,8 +1,8 @@
 import pytest
 from unittest.mock import MagicMock, patch
-import numpy as np
 import wave
-from app import SpeechToTextApp
+import numpy as np
+from whisper_widget.app import SpeechToTextApp
 import sys
 
 

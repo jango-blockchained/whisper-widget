@@ -1,7 +1,7 @@
 import json
 import pytest
 from pathlib import Path
-from app import load_settings, save_settings
+from whisper_widget.settings import load_settings, save_settings
 
 
 def test_load_settings_default(temp_config_dir):

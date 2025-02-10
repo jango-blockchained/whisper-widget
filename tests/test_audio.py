@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import wave
 import os
-from app import (
+from whisper_widget.app import (
     check_microphone_access,
     noise_reduction,
     SpeechToTextApp
@@ -87,8 +87,8 @@ def test_noise_reduction():
 @pytest.fixture
 def mock_whisper_app(mock_audio):
     """Create a mock whisper app with mocked components."""
-    with patch('app.WhisperModel') as mock_model, \
-         patch('app.webrtcvad.Vad') as mock_vad:
+    with patch('whisper_widget.app.WhisperModel') as mock_model, \
+         patch('whisper_widget.app.webrtcvad.Vad') as mock_vad:
         
         # Set up mock model
         mock_model_instance = MagicMock()
@@ -279,7 +279,7 @@ def test_noise_reduction_integration(mock_whisper_app):
     test_data = np.random.bytes(chunk_size * 2)
 
     # Mock noise_reduction function
-    with patch('app.noise_reduction') as mock_noise_reduce:
+    with patch('whisper_widget.app.noise_reduction') as mock_noise_reduce:
         mock_noise_reduce.return_value = test_data
 
         # Process audio chunk with noise reduction

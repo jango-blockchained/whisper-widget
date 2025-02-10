@@ -1,14 +1,14 @@
 import pytest
 from unittest.mock import MagicMock, patch
 from pynput.keyboard import Key
-from app import SpeechToTextApp
+from whisper_widget.app import SpeechToTextApp
 
 
 @pytest.fixture
 def mock_app(mock_audio):
     """Create a mock app for keyboard testing."""
-    with patch('app.WhisperModel') as mock_model, \
-         patch('app.webrtcvad.Vad') as mock_vad:
+    with patch('whisper_widget.app.WhisperModel') as mock_model, \
+         patch('whisper_widget.app.webrtcvad.Vad') as mock_vad:
         
         # Set up mock model
         mock_model_instance = MagicMock()

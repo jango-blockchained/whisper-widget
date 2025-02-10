@@ -6,12 +6,12 @@ import threading
 import time
 import wave
 from pathlib import Path
-from typing import Any, Dict, Optional, Union, Callable, cast, TypedDict
+from typing import Any, Dict, Optional, Union, TypedDict
 
 import gi
-gi.require_version('Gtk', '3.0')
+gi.require_version('Keybinder', '3.0')
 gi.require_version('AppIndicator3', '0.1')
-from gi.repository import Gtk, AppIndicator3
+gi.require_version('Gtk', '3.0')
 
 import openai
 import pyaudio
@@ -19,6 +19,10 @@ import pyperclip
 import webrtcvad
 from faster_whisper import WhisperModel
 from pynput.keyboard import Key, KeyCode, Listener, Controller
+from gi.repository import AppIndicator3, Gtk
+
+from whisper_widget.settings import load_settings, save_settings
+from whisper_widget.utils import noise_reduction
 
 
 class OpenAIResponse(TypedDict):
@@ -81,7 +85,7 @@ def load_settings() -> Dict[str, Any]:
     config_dir = Path.home() / '.config' / 'whisper-widget'
     config_file = config_dir / 'config.json'
     default_settings: Dict[str, Any] = {
-        'transcription_mode': 'local',  # local or openai
+        'transcription_mode': 'continuous',  # continuous or clipboard
         'model_size': 'base',  # tiny, base, small, medium, large
         'language': 'en',  # language code
         'vad_sensitivity': 3,  # 1-3
@@ -91,8 +95,8 @@ def load_settings() -> Dict[str, Any]:
         'max_silence_duration': 1.0,  # seconds
         'min_audio_length': 1.0,  # seconds
         'speech_threshold': 0.5,  # 0.0-1.0
-        'silence_threshold': 10,  # Changed from 400 to 10
-        'speech_start_chunks': 2,  # number of consecutive speech chunks to start recording
+        'silence_threshold': 10,  # silence threshold
+        'speech_start_chunks': 2,  # consecutive speech chunks to start
         'noise_reduce_threshold': 0.1  # 0.0-1.0
     }
     
@@ -141,8 +145,21 @@ class SpeechToTextApp:
         openai_api_key: Optional[str] = None,
     ) -> None:
         """Initialize the application."""
-        # Load saved settings or use defaults
-        self.settings = load_settings()
+        self.settings = {
+            'transcription_mode': 'continuous',  # continuous or clipboard
+            'model_size': 'base',  # tiny, base, small, medium, large
+            'language': 'en',  # language code
+            'vad_sensitivity': 3,  # 1-3
+            'auto_detect_speech': True,
+            'add_punctuation': True,
+            'min_speech_duration': 0.5,  # seconds
+            'max_silence_duration': 1.0,  # seconds
+            'min_audio_length': 1.0,  # seconds
+            'speech_threshold': 0.5,  # 0.0-1.0
+            'silence_threshold': 10,  # silence threshold
+            'speech_start_chunks': 2,  # consecutive speech chunks to start
+            'noise_reduce_threshold': 0.1  # 0.0-1.0
+        }
         
         # Store instance attributes for compatibility with tests
         self.transcription_mode = transcription_mode
@@ -563,7 +580,10 @@ class SpeechToTextApp:
                 self.audio_thread.start()
 
     # ------------------------------
-    def on_key_press(self, key: Optional[Union[Key, KeyCode]]) -> Optional[bool]:
+    def on_key_press(
+        self, 
+        key: Optional[Union[Key, KeyCode]]
+    ) -> Optional[bool]:
         """Toggle manual recording using the F9 key."""
         try:
             if key == Key.f9:
@@ -777,7 +797,10 @@ class SpeechToTextApp:
                     )
                     return result["text"].strip()
             else:
-                print(f"Error: Invalid transcription mode '{self.transcription_mode}'")
+                print(
+                    f"Error: Invalid transcription mode "
+                    f"'{self.transcription_mode}'"
+                )
                 return ""
                 
         except Exception as e:
@@ -799,6 +822,24 @@ class SpeechToTextApp:
         self.audio_thread = threading.Thread(target=self.audio_loop, daemon=True)
         self.audio_thread.start()
         Gtk.main()
+
+    def process_audio_chunk(self, data: bytes) -> None:
+        """Process a single chunk of audio data.
+        
+        Args:
+            data: Raw audio data bytes.
+        """
+        # Apply noise reduction if enabled
+        if self.settings['noise_reduce_threshold'] > 0:
+            data = noise_reduction(
+                data,
+                self.settings['sample_rate'],
+                threshold=self.settings['noise_reduce_threshold']
+            )
+        
+        # Add to buffer if recording
+        if self.recording:
+            self.audio_buffer.extend(data)
 
 
 # ------------------------------

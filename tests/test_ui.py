@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import MagicMock, patch
-from app import SpeechToTextApp
+from whisper_widget.app import SpeechToTextApp
 from gi.repository import Gtk
 
 
