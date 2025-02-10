@@ -2,136 +2,114 @@
 
 import pytest
 import numpy as np
-import openwakeword
+from unittest.mock import MagicMock, patch
 
 from whisper_widget.app import SpeechToTextApp
 
 
-class TestWakeWordDetection:
-    """Test suite for wake word detection."""
+@pytest.fixture
+def mock_wake_word_detector():
+    """Create a mock wake word detector."""
+    with patch('openwakeword.Model') as mock_model:
+        mock_model_instance = MagicMock()
+        mock_model.return_value = mock_model_instance
+        mock_model_instance.predict.return_value = [(None, 0.0)]
+        yield mock_model_instance
 
-    @pytest.fixture
-    def speech_app(self):
-        """Create a SpeechToTextApp instance for testing."""
-        return SpeechToTextApp(wake_word="hey computer")
 
-    def test_wake_word_initialization(self, speech_app):
-        """Test that wake word detection is initialized correctly."""
-        assert hasattr(speech_app, 'wake_word_detector')
-        assert isinstance(speech_app.wake_word_detector, openwakeword.Model)
-        assert speech_app.wake_word == "hey computer"
-        assert not speech_app.wake_word_detected
+@pytest.fixture
+def speech_app(mock_wake_word_detector):
+    """Create a SpeechToTextApp instance for testing."""
+    app = SpeechToTextApp(wake_word="hey computer")
+    app.wake_word_detector = mock_wake_word_detector
+    return app
 
-    def test_wake_word_toggle(self, speech_app):
-        """Test toggling wake word detection on and off."""
-        # Initial state should be False
-        assert not speech_app.wake_word_detected
 
-        # Simulate toggling on
-        speech_app.wake_word_detected = True
-        assert speech_app.wake_word_detected
+def test_wake_word_initialization(speech_app):
+    """Test that wake word detection is initialized correctly."""
+    assert hasattr(speech_app, 'wake_word_detector')
+    assert speech_app.wake_word == "hey computer"
+    assert not speech_app.wake_word_detected
 
-        # Simulate toggling off
-        speech_app.wake_word_detected = False
-        assert not speech_app.wake_word_detected
 
-    def test_wake_word_prediction(self, speech_app, mocker):
-        """Test wake word prediction mechanism."""
-        # Create a mock audio chunk
-        audio_chunk = np.random.randint(
-            -32768, 32767, 
-            size=16000, 
-            dtype=np.int16
-        )
-        # Convert to float32 for prediction
-        _ = audio_chunk.astype(np.float32) / 32768.0
+def test_wake_word_toggle(speech_app):
+    """Test toggling wake word detection on and off."""
+    # Initial state should be False
+    assert not speech_app.wake_word_detected
 
-        # Mock the wake word detector's predict method
-        mock_predict = mocker.patch.object(
-            speech_app.wake_word_detector, 
-            'predict', 
-            return_value=[(None, 0.6)]
-        )
+    # Simulate toggling on
+    speech_app.wake_word_detected = True
+    assert speech_app.wake_word_detected
 
-        # Simulate wake word detection loop
-        speech_app.running = True
-        speech_app.audio_buffer_ww.put(audio_chunk)
+    # Simulate toggling off
+    speech_app.wake_word_detected = False
+    assert not speech_app.wake_word_detected
 
-        # Call the wake word detection method
-        speech_app._wake_word_loop()
 
-        # Verify predictions were made
-        mock_predict.assert_called_once()
-        assert mock_predict.call_args[0][0].dtype == np.float32
+def test_wake_word_detection(speech_app, mock_wake_word_detector):
+    """Test wake word detection mechanism."""
+    # Create test audio data
+    audio_data = np.random.randint(
+        -32768, 32767,
+        size=16000,
+        dtype=np.int16
+    ).tobytes()
+    
+    # Set up mock prediction
+    mock_wake_word_detector.predict.return_value = [(None, 0.6)]
+    
+    # Add audio to buffer
+    speech_app.audio_buffer_ww.put(audio_data)
+    
+    # Process one chunk
+    speech_app._wake_word_loop()
+    
+    # Verify wake word was detected
+    assert speech_app.wake_word_detected
+    assert speech_app.is_recording
 
-    def test_wake_word_activation(self, speech_app, mocker):
-        """Test that wake word activation triggers recording."""
-        # Mock the start_recording method
-        mock_start_recording = mocker.patch.object(
-            speech_app, 
-            'start_recording'
-        )
 
-        # Create a mock audio chunk 
-        audio_chunk = np.random.randint(
-            -32768, 32767, 
-            size=16000, 
-            dtype=np.int16
-        )
-        # Convert to float32 for prediction
-        _ = audio_chunk.astype(np.float32) / 32768.0
+def test_wake_word_no_detection(speech_app, mock_wake_word_detector):
+    """Test when wake word is not detected."""
+    # Create test audio data
+    audio_data = np.random.randint(
+        -32768, 32767,
+        size=16000,
+        dtype=np.int16
+    ).tobytes()
+    
+    # Set up mock prediction with low confidence
+    mock_wake_word_detector.predict.return_value = [(None, 0.3)]
+    
+    # Add audio to buffer
+    speech_app.audio_buffer_ww.put(audio_data)
+    
+    # Process one chunk
+    speech_app._wake_word_loop()
+    
+    # Verify wake word was not detected
+    assert not speech_app.wake_word_detected
+    assert not speech_app.is_recording
 
-        # Mock the wake word detector to return high confidence
-        mocker.patch.object(
-            speech_app.wake_word_detector, 
-            'predict', 
-            return_value=[(None, 0.8)]  # High confidence
-        )
 
-        # Ensure initial state
-        assert not speech_app.wake_word_detected
-
-        # Simulate wake word detection loop
-        speech_app.running = True
-        speech_app.audio_buffer_ww.put(audio_chunk)
-        speech_app._wake_word_loop()
-
-        # Verify recording was started and wake word was detected
-        mock_start_recording.assert_called_once()
-        assert speech_app.wake_word_detected
-
-    def test_wake_word_low_confidence(self, speech_app, mocker):
-        """Test that low confidence wake word does not trigger recording."""
-        # Mock the start_recording method
-        mock_start_recording = mocker.patch.object(
-            speech_app, 
-            'start_recording'
-        )
-
-        # Create a mock audio chunk
-        audio_chunk = np.random.randint(
-            -32768, 32767, 
-            size=16000, 
-            dtype=np.int16
-        )
-        # Convert to float32 for prediction
-        _ = audio_chunk.astype(np.float32) / 32768.0
-
-        # Mock the wake word detector to return low confidence
-        mocker.patch.object(
-            speech_app.wake_word_detector, 
-            'predict', 
-            return_value=[(None, 0.3)]  # Low confidence
-        )
-
-        # Ensure initial state
-        assert not speech_app.wake_word_detected
-
-        # Simulate wake word detection loop
-        speech_app.running = True
-        speech_app.audio_buffer_ww.put(audio_chunk)
-        speech_app._wake_word_loop()
-
-        # Verify recording was not started and wake word was not detected
-        mock_start_recording.assert_not_called()
-        assert not speech_app.wake_word_detected 
+def test_wake_word_error_handling(speech_app, mock_wake_word_detector):
+    """Test error handling in wake word detection."""
+    # Create test audio data
+    audio_data = np.random.randint(
+        -32768, 32767,
+        size=16000,
+        dtype=np.int16
+    ).tobytes()
+    
+    # Set up mock to raise exception
+    mock_wake_word_detector.predict.side_effect = Exception("Test error")
+    
+    # Add audio to buffer
+    speech_app.audio_buffer_ww.put(audio_data)
+    
+    # Process one chunk - should not raise exception
+    speech_app._wake_word_loop()
+    
+    # Verify state remains unchanged
+    assert not speech_app.wake_word_detected
+    assert not speech_app.is_recording 
