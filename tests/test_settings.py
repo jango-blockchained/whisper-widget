@@ -34,6 +34,9 @@ def test_save_and_load_settings(temp_config_dir, sample_settings):
         'vad_sensitivity': 2,
         'min_speech_duration': 1.0,
         'max_silence_duration': 2.0,
+        'min_audio_length': 1.0,
+        'speech_threshold': 0.5,
+        'silence_threshold': 10,
         'speech_start_chunks': 3,
         'noise_reduce_threshold': 0.2
     })

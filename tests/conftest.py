@@ -5,6 +5,7 @@ import tempfile
 import json
 from unittest.mock import MagicMock, patch
 import numpy as np
+import pyaudio
 
 
 class MockStream:
@@ -28,26 +29,30 @@ class MockStream:
 
 
 class MockPyAudio:
+    """Mock PyAudio class for testing."""
     def __init__(self):
+        self.format = pyaudio.paInt16
         self.streams = []
     
-    def open(self, format=None, channels=None, rate=None, input=None,
-             frames_per_buffer=None, stream_callback=None, start=True,
-             input_device_index=None, **kwargs):
+    def get_default_input_device_info(self):
+        """Return mock input device info."""
+        return {'name': 'Mock Input Device'}
+
+    def open(self, *args, **kwargs):
+        """Return mock stream."""
         stream = MockStream()
         self.streams.append(stream)
         return stream
     
-    def get_default_input_device_info(self):
-        return {'name': 'Mock Input Device', 'index': 0}
-    
     def get_device_count(self):
         return 1
     
-    def get_sample_size(self, format):
-        return 2
+    def get_sample_size(self, format_type):
+        """Return mock sample size."""
+        return 2  # 16-bit audio = 2 bytes
     
     def terminate(self):
+        """Mock terminate method."""
         for stream in self.streams:
             stream.close()
 

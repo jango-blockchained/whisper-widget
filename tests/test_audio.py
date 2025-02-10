@@ -272,35 +272,22 @@ def test_noise_reduction_integration(mock_whisper_app):
     """Test noise reduction integration in audio processing."""
     app = mock_whisper_app
     app.settings['noise_reduce_threshold'] = 0.2
-    
+
     # Create test audio data
     sample_rate = 16000
     chunk_size = int(sample_rate * 0.03)
     test_data = np.random.bytes(chunk_size * 2)
-    
-    # Mock noise_reduction function to track calls
+
+    # Mock noise_reduction function
     with patch('app.noise_reduction') as mock_noise_reduce:
         mock_noise_reduce.return_value = test_data
-        
+
         # Process audio chunk with noise reduction
-        app.audio_buffer = bytearray()  # Clear buffer
-        app.settings['noise_reduce_threshold'] = 0.2
-        
-        # Simulate processing in audio loop
-        data = test_data
-        if app.settings['noise_reduce_threshold'] > 0:
-            data = noise_reduction(
-                data,
-                sample_rate,
-                threshold=app.settings['noise_reduce_threshold']
-            )
-        app.audio_buffer.extend(data)
-        
-        # Verify noise reduction was called
+        app.process_audio_chunk(test_data)
+
+        # Verify noise reduction was called with correct parameters
         mock_noise_reduce.assert_called_with(
             test_data,
-            sample_rate,
-            threshold=0.2
-        )
-    
-    app.stop_recording() 
+            app.sample_rate,
+            threshold=app.settings['noise_reduce_threshold']
+        ) 
