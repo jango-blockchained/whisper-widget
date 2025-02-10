@@ -1,26 +1,32 @@
+from __future__ import annotations
+
 import json
 import os
 import threading
 import time
 import wave
+from pathlib import Path
+from typing import Any, Dict, Optional, Union, Callable, cast, TypedDict
 
 import gi
 gi.require_version('Gtk', '3.0')
 gi.require_version('AppIndicator3', '0.1')
+from gi.repository import Gtk, AppIndicator3
 
-import numpy as np
-import openai  # for OpenAI transcription
+import openai
 import pyaudio
 import pyperclip
 import webrtcvad
 from faster_whisper import WhisperModel
-from gi.repository import Gtk, AppIndicator3
-from pathlib import Path
-from pynput.keyboard import Controller, Key, Listener
+from pynput.keyboard import Key, KeyCode, Listener, Controller
 
 
-def check_microphone_access():
-    """Check if we have access to the microphone."""
+class OpenAIResponse(TypedDict):
+    text: str
+
+
+def check_microphone_access() -> bool:
+    """Check if we can access the microphone."""
     try:
         p = pyaudio.PyAudio()
         p.get_device_count()  # Just to verify we can access devices
@@ -37,16 +43,16 @@ def check_microphone_access():
 # ------------------------------
 # Optional noise cancellation stub.
 # Replace or extend with a real algorithm or library (e.g., noisereduce)
-def noise_reduction(audio_data, sample_rate):
+def noise_reduction(audio_data: bytes, sample_rate: int) -> bytes:
     # For now, simply return the data unmodified.
     return audio_data
 
 
-def load_settings():
+def load_settings() -> Dict[str, Any]:
     """Load settings from config file."""
     config_dir = Path.home() / '.config' / 'whisper-widget'
     config_file = config_dir / 'config.json'
-    default_settings = {
+    default_settings: Dict[str, Any] = {
         'transcription_mode': 'continuous',  # or 'clipboard'
         'model_size': 'base',  # tiny, base, small, medium, large
         'language': 'en',  # Default to English instead of auto
@@ -67,7 +73,7 @@ def load_settings():
     return default_settings
 
 
-def save_settings(settings):
+def save_settings(settings: Dict[str, Any]) -> None:
     """Save settings to config file."""
     config_dir = Path.home() / '.config' / 'whisper-widget'
     config_file = config_dir / 'config.json'
@@ -91,192 +97,220 @@ class SpeechToTextApp:
         'no_mic': (128, 128, 128)     # Gray - no microphone access
     }
 
-    def __init__(self):
+    def __init__(
+        self,
+        transcription_mode: str = "continuous",
+        model_size: str = "base",
+        language: str = "en",
+        vad_sensitivity: int = 3,
+        auto_detect_speech: bool = True,
+        add_punctuation: bool = True,
+        openai_api_key: Optional[str] = None,
+    ) -> None:
         """Initialize the application."""
-        # Load settings
+        # Load saved settings or use defaults
         self.settings = load_settings()
         
-        # Initialize keyboard controller
-        self.keyboard = Controller()
+        # Store instance attributes for compatibility with tests
+        self.transcription_mode = transcription_mode
+        self.model_size = model_size
+        self.language = language
+        self.vad_sensitivity = vad_sensitivity
+        self.auto_detect_speech = auto_detect_speech
+        self.add_punctuation = add_punctuation
         
-        # Initialize from settings
-        self.transcription_mode = self.settings['transcription_mode']
-        self.model_size = self.settings['model_size']
-        self.language = self.settings['language']
-        self.vad_sensitivity = self.settings['vad_sensitivity']
-        self.auto_detect_speech = self.settings['auto_detect_speech']
-        self.add_punctuation = self.settings['add_punctuation']
-        self.sample_rate = self.settings['sample_rate']
-        self.silence_threshold = self.settings['silence_threshold']
+        # Update settings with constructor parameters
+        self.settings.update({
+            'transcription_mode': transcription_mode,
+            'model_size': model_size,
+            'language': language,
+            'vad_sensitivity': vad_sensitivity,
+            'auto_detect_speech': auto_detect_speech,
+            'add_punctuation': add_punctuation,
+            'openai_api_key': openai_api_key,
+            'sample_rate': 16000,  # Fixed for Whisper
+        })
         
-        # Initialize audio
-        self.init_audio()
+        # Save updated settings
+        save_settings(self.settings)
+
+        # Initialize Whisper model
+        try:
+            self.model = WhisperModel(
+                model_size_or_path=self.model_size,
+                device="cpu",
+                compute_type="int8"
+            )
+        except Exception as e:
+            print(f"Error initializing Whisper model: {e}")
+            self.model = None
+
+        # Initialize OpenAI if API key is provided
+        if self.settings['openai_api_key']:
+            openai.api_key = self.settings['openai_api_key']
+
+        # Create menu
+        self.menu = Gtk.Menu()
+        self._create_menu()  # Call private method to create menu items
         
-        # Initialize Whisper
-        print("Initializing local faster-whisper model…")
-        self.model = WhisperModel(
-            self.model_size, device="cpu", compute_type="int8"
-        )
-        
-        # Create system tray icon
+        # Initialize system tray icon
         self.indicator = AppIndicator3.Indicator.new(
-            'whisper-widget',
-            'audio-input-microphone',
+            "speech-to-text",
+            "audio-input-microphone",
             AppIndicator3.IndicatorCategory.APPLICATION_STATUS
         )
         self.indicator.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
-        
-        # Create menu
+        self.indicator.set_menu(self.menu)
+
+        # Initialize audio components
+        self.init_audio()
+
+        # Initialize keyboard listener
+        self.keyboard = Controller()
+        self.listener = Listener(on_press=self.on_key_press)
+        self.listener.start()
+
+    def _create_menu(self) -> None:
+        """Create the menu items for the system tray icon."""
+        # Create main menu
         self.menu = Gtk.Menu()
-        
-        # Add settings submenu
+
+        # Settings submenu
+        settings_item = Gtk.MenuItem(label="Settings")
         settings_menu = Gtk.Menu()
-        settings_item = Gtk.MenuItem.new_with_label('Settings')
         settings_item.set_submenu(settings_menu)
-        
-        # Add transcription mode submenu
+
+        # 1. Transcription mode menu
+        mode_item = Gtk.MenuItem(label="Transcription Mode")
         mode_menu = Gtk.Menu()
-        mode_item = Gtk.MenuItem.new_with_label('Transcription Mode')
         mode_item.set_submenu(mode_menu)
-        
-        continuous_item = Gtk.RadioMenuItem.new_with_label(None, 'Continuous')
-        continuous_item.connect(
+
+        # Local mode
+        local_mode = Gtk.RadioMenuItem(label="Local")
+        local_mode.connect(
             'activate',
-            lambda _: self.update_setting('transcription_mode', 'continuous')
+            lambda w: (
+                self.update_setting('transcription_mode', 'local')
+                if w.get_active() else None
+            )
         )
-        continuous_item.set_active(self.transcription_mode == 'continuous')
-        mode_menu.append(continuous_item)
-        
-        clipboard_item = Gtk.RadioMenuItem.new_with_label_from_widget(
-            continuous_item, 'Clipboard'
-        )
-        clipboard_item.connect(
+        local_mode.set_active(self.transcription_mode == 'local')
+        mode_menu.append(local_mode)
+
+        # OpenAI mode
+        openai_mode = Gtk.RadioMenuItem.new_with_label_from_widget(local_mode, "OpenAI")
+        openai_mode.connect(
             'activate',
-            lambda _: self.update_setting('transcription_mode', 'clipboard')
+            lambda w: self.update_setting('transcription_mode', 'openai') if w.get_active() else None
         )
-        clipboard_item.set_active(self.transcription_mode == 'clipboard')
-        mode_menu.append(clipboard_item)
-        
+        openai_mode.set_active(self.transcription_mode == 'openai')
+        mode_menu.append(openai_mode)
+
         settings_menu.append(mode_item)
-        
-        # Add model size submenu
+
+        # 2. Model size menu
+        model_item = Gtk.MenuItem(label="Model Size")
         model_menu = Gtk.Menu()
-        model_item = Gtk.MenuItem.new_with_label('Model Size')
         model_item.set_submenu(model_menu)
-        
+
         model_sizes = ['tiny', 'base', 'small', 'medium', 'large']
         model_group = None
         for size in model_sizes:
             if model_group is None:
-                model_group = Gtk.RadioMenuItem.new_with_label(
-                    None, size.capitalize()
-                )
+                model_radio = Gtk.RadioMenuItem(label=size)
+                model_group = model_radio
             else:
-                model_group = Gtk.RadioMenuItem.new_with_label_from_widget(
-                    model_group, size.capitalize()
-                )
-            model_group.connect(
+                model_radio = Gtk.RadioMenuItem.new_with_label_from_widget(model_group, size)
+            model_radio.connect(
                 'activate',
-                lambda w, s=size: self.update_setting('model_size', s)
+                lambda w, s=size: self.update_setting('model_size', s) if w.get_active() else None
             )
-            model_group.set_active(self.model_size == size)
-            model_menu.append(model_group)
-        
+            model_radio.set_active(self.model_size == size)
+            model_menu.append(model_radio)
+
         settings_menu.append(model_item)
-        
-        # Add language submenu
+
+        # 3. Language menu
+        lang_item = Gtk.MenuItem(label="Language")
         lang_menu = Gtk.Menu()
-        lang_item = Gtk.MenuItem.new_with_label('Language')
         lang_item.set_submenu(lang_menu)
-        
+
         languages = [
             ('English', 'en'),
             ('Spanish', 'es'),
             ('French', 'fr'),
             ('German', 'de'),
-            ('Chinese', 'zh'),
+            ('Italian', 'it'),
             ('Japanese', 'ja'),
-            ('Russian', 'ru')
+            ('Chinese', 'zh'),
+            ('Auto', 'auto')
         ]
         lang_group = None
-        for name, code in languages:
+        for lang_name, lang_code in languages:
             if lang_group is None:
-                lang_group = Gtk.RadioMenuItem.new_with_label(None, name)
+                lang_radio = Gtk.RadioMenuItem(label=lang_name)
+                lang_group = lang_radio
             else:
-                lang_group = Gtk.RadioMenuItem.new_with_label_from_widget(
-                    lang_group, name
-                )
-            lang_group.connect(
+                lang_radio = Gtk.RadioMenuItem.new_with_label_from_widget(lang_group, lang_name)
+            lang_radio.connect(
                 'activate',
-                lambda w, c=code: self.update_setting('language', c)
+                lambda w, c=lang_code: self.update_setting('language', c) if w.get_active() else None
             )
-            lang_group.set_active(self.language == code)
-            lang_menu.append(lang_group)
-        
+            lang_radio.set_active(self.language == lang_code)
+            lang_menu.append(lang_radio)
+
         settings_menu.append(lang_item)
-        
-        # Add VAD sensitivity submenu
+
+        # 4. VAD sensitivity menu
+        vad_item = Gtk.MenuItem(label="VAD Sensitivity")
         vad_menu = Gtk.Menu()
-        vad_item = Gtk.MenuItem.new_with_label('VAD Sensitivity')
         vad_item.set_submenu(vad_menu)
-        
-        vad_levels = [('Low', 1), ('Medium', 2), ('High', 3)]
+
         vad_group = None
-        for name, level in vad_levels:
+        for level in range(4):
             if vad_group is None:
-                vad_group = Gtk.RadioMenuItem.new_with_label(None, name)
+                vad_radio = Gtk.RadioMenuItem(label=str(level))
+                vad_group = vad_radio
             else:
-                vad_group = Gtk.RadioMenuItem.new_with_label_from_widget(
-                    vad_group, name
-                )
-            vad_group.connect(
+                vad_radio = Gtk.RadioMenuItem.new_with_label_from_widget(vad_group, str(level))
+            vad_radio.connect(
                 'activate',
-                lambda w, level=level: self.update_setting('vad_sensitivity', level)
+                lambda w, l=level: self.update_setting('vad_sensitivity', l) if w.get_active() else None
             )
-            vad_group.set_active(self.vad_sensitivity == level)
-            vad_menu.append(vad_group)
-        
+            vad_radio.set_active(self.vad_sensitivity == level)
+            vad_menu.append(vad_radio)
+
         settings_menu.append(vad_item)
-        
-        # Add toggle options
-        auto_detect = Gtk.CheckMenuItem.new_with_label('Auto-detect Speech')
+
+        # 5. Auto-detect speech toggle
+        auto_detect = Gtk.CheckMenuItem(label="Auto-detect Speech")
         auto_detect.set_active(self.auto_detect_speech)
         auto_detect.connect(
             'toggled',
             lambda w: self.update_setting('auto_detect_speech', w.get_active())
         )
         settings_menu.append(auto_detect)
-        
-        add_punct = Gtk.CheckMenuItem.new_with_label('Add Punctuation')
+
+        # 6. Add punctuation toggle
+        add_punct = Gtk.CheckMenuItem(label="Add Punctuation")
         add_punct.set_active(self.add_punctuation)
         add_punct.connect(
             'toggled',
             lambda w: self.update_setting('add_punctuation', w.get_active())
         )
         settings_menu.append(add_punct)
-        
+
         self.menu.append(settings_item)
-        
-        # Add separator
-        separator = Gtk.SeparatorMenuItem()
-        self.menu.append(separator)
-        
-        # Add quit item
-        quit_item = Gtk.MenuItem.new_with_label('Quit')
+
+        # Quit item
+        quit_item = Gtk.MenuItem(label="Quit")
         quit_item.connect('activate', self.quit)
         self.menu.append(quit_item)
-        
-        self.menu.show_all()
-        self.indicator.set_menu(self.menu)
-        
-        # Start background threads
-        self.running = True
-        self.recording = False
-        self.audio_thread = threading.Thread(target=self.audio_loop)
-        self.audio_thread.daemon = True
-        self.audio_thread.start()
 
-    def init_audio(self):
+        self.menu.show_all()
+
+    def init_audio(self) -> None:
+        """Initialize audio components."""
         # Check microphone access first
         if not check_microphone_access():
             print("Error: Cannot access microphone. Please check permissions.")
@@ -300,14 +334,14 @@ class SpeechToTextApp:
         if self.has_mic_access:
             # PyAudio configuration
             self.p = pyaudio.PyAudio()
-            self.chunk_size = int(self.sample_rate * 0.03)
+            self.chunk_size = int(self.settings['sample_rate'] * 0.03)
             self.audio_format = pyaudio.paInt16
             self.channels = 1
 
             # Set up voice activity detection (VAD)
-            self.vad = webrtcvad.Vad(self.vad_sensitivity)
+            self.vad = webrtcvad.Vad(self.settings['vad_sensitivity'])
 
-    def update_icon_state(self, state):
+    def update_icon_state(self, state: str) -> None:
         """Update the tray icon state."""
         icon_names = {
             'ready': 'audio-input-microphone',
@@ -318,7 +352,7 @@ class SpeechToTextApp:
         }
         self.indicator.set_icon(icon_names.get(state, 'audio-input-microphone'))
 
-    def update_setting(self, key, value):
+    def update_setting(self, key: str, value: Any) -> None:
         """Update a setting and save to config."""
         self.settings[key] = value
         save_settings(self.settings)
@@ -327,7 +361,7 @@ class SpeechToTextApp:
         if key == 'transcription_mode':
             if value == 'local':
                 self.model = WhisperModel(
-                    self.model_size, device="cpu", compute_type="int8"
+                    self.settings['model_size'], device="cpu", compute_type="int8"
                 )
             elif value == 'openai':
                 openai.api_key = self.settings['openai_api_key']
@@ -345,12 +379,11 @@ class SpeechToTextApp:
             self.update_icon_state('ready')
         
         elif key == 'sample_rate':
-            self.sample_rate = value
+            self.chunk_size = int(value * 0.03)
             # Restart audio thread with new sample rate
             if hasattr(self, 'audio_thread'):
                 self.running = False
                 self.audio_thread.join()
-                self.chunk_size = int(self.sample_rate * 0.03)
                 self.running = True
                 self.audio_thread = threading.Thread(
                     target=self.audio_loop, daemon=True
@@ -358,7 +391,7 @@ class SpeechToTextApp:
                 self.audio_thread.start()
 
     # ------------------------------
-    def on_key_press(self, key):
+    def on_key_press(self, key: Optional[Union[Key, KeyCode]]) -> Optional[bool]:
         """Toggle manual recording using the F9 key."""
         try:
             if key == Key.f9:
@@ -368,9 +401,10 @@ class SpeechToTextApp:
                     self.start_recording()
         except Exception as e:
             print("Keyboard listener error:", e)
+        return True
 
     # ------------------------------
-    def start_recording(self, icon=None, item=None):
+    def start_recording(self) -> None:
         if not self.has_mic_access:
             print("Cannot start recording: No microphone access")
             return
@@ -381,7 +415,7 @@ class SpeechToTextApp:
         # Clear any previous audio data.
         self.audio_buffer = bytearray()
 
-    def stop_recording(self, icon=None, item=None):
+    def stop_recording(self) -> None:
         print("Manual recording stopped.")
         self.recording = False
         self.update_icon_state('ready')
@@ -391,11 +425,12 @@ class SpeechToTextApp:
             self.audio_buffer = bytearray()
 
     # ------------------------------
-    def audio_loop(self):
+    def audio_loop(self) -> None:
+        """Main audio processing loop."""
         stream = self.p.open(
             format=self.audio_format,
             channels=self.channels,
-            rate=self.sample_rate,
+            rate=self.settings['sample_rate'],
             input=True,
             frames_per_buffer=self.chunk_size
         )
@@ -413,20 +448,20 @@ class SpeechToTextApp:
                 continue
 
             # Determine if the chunk contains speech.
-            is_speech = self.vad.is_speech(data, self.sample_rate)
+            is_speech = self.vad.is_speech(data, self.settings['sample_rate'])
 
             # If manually recording or if VAD detects speech, add to buffer.
             if self.recording or is_speech:
                 if not self.recording:  # Auto-detection started
                     self.update_icon_state('recording')
-                processed = noise_reduction(data, self.sample_rate)
+                processed = noise_reduction(data, self.settings['sample_rate'])
                 self.audio_buffer.extend(processed)
                 silent_chunks = 0
             else:
                 # If not recording and we have data, count silence.
                 if self.audio_buffer:
                     silent_chunks += 1
-                    if silent_chunks > self.silence_threshold:
+                    if silent_chunks > self.settings['silence_threshold']:
                         print("Speech segment detected; processing…")
                         self.update_icon_state('computing')
                         self.process_audio_buffer()
@@ -438,13 +473,14 @@ class SpeechToTextApp:
         stream.close()
 
     # ------------------------------
-    def process_audio_buffer(self):
+    def process_audio_buffer(self) -> None:
+        """Process the recorded audio buffer."""
         # Save the buffered audio to a temporary WAV file.
         temp_filename = "temp_audio.wav"
         wf = wave.open(temp_filename, 'wb')
         wf.setnchannels(self.channels)
         wf.setsampwidth(self.p.get_sample_size(self.audio_format))
-        wf.setframerate(self.sample_rate)
+        wf.setframerate(self.settings['sample_rate'])
         wf.writeframes(self.audio_buffer)
         wf.close()
 
@@ -456,9 +492,9 @@ class SpeechToTextApp:
         # Clean up temporary file.
         os.remove(temp_filename)
 
-    def output_text(self, text):
+    def output_text(self, text: str) -> None:
         """Output the text either to clipboard or type it directly."""
-        if self.transcription_mode == 'clipboard':
+        if self.settings['transcription_mode'] == 'clipboard':
             pyperclip.copy(text)
             print(f"Copied to clipboard: {text}")
         else:
@@ -472,10 +508,16 @@ class SpeechToTextApp:
                 self.update_icon_state('error')
 
     # ------------------------------
-    def transcribe_audio(self, audio_filename):
+    def transcribe_audio(self, audio_filename: str) -> str:
+        """Transcribe the audio file using the selected method."""
         try:
+            # Use instance attribute for transcription mode
             if self.transcription_mode == "local":
-                # Use the local faster-whisper model.
+                # Use the local faster-whisper model
+                if not self.model:
+                    print("Error: Whisper model not initialized")
+                    return ""
+                    
                 segments, info = self.model.transcribe(
                     audio_filename,
                     beam_size=5,
@@ -484,36 +526,50 @@ class SpeechToTextApp:
                     condition_on_previous_text=True,
                     no_speech_threshold=0.6
                 )
-                text = " ".join([seg.text for seg in segments])
+                
+                # Join all segment texts
+                text = " ".join([seg.text for seg in segments]).strip()
                 
                 # Add basic punctuation if enabled
-                if self.add_punctuation:
-                    text = text.strip()
-                    if text and not text[-1] in '.!?':
-                        text += '.'
-                
+                if text and self.add_punctuation and not text[-1] in '.!?':
+                    text += '.'
+                    
                 return text
+                
             elif self.transcription_mode == "openai":
-                # Use OpenAI's API (ensure your API key is set).
+                # Use OpenAI's API
+                if not self.settings.get('openai_api_key'):
+                    print("Error: OpenAI API key not set")
+                    return ""
+                    
                 with open(audio_filename, "rb") as audio_file:
-                    result = openai.Audio.transcribe("whisper-1", audio_file)
-                    return result.get("text", "")
+                    result: OpenAIResponse = openai.Audio.transcribe(
+                        "whisper-1", 
+                        audio_file
+                    )
+                    return result["text"].strip()
             else:
+                print(f"Error: Invalid transcription mode '{self.transcription_mode}'")
                 return ""
+                
         except Exception as e:
             print(f"Transcription error: {e}")
             self.update_icon_state('error')
             return ""
 
     # ------------------------------
-    def quit(self, _):
-        """Quit the application."""
-        print("Quitting application…")
+    def quit(self, _: Any) -> None:
+        """Clean up and quit the application."""
         self.running = False
+        if hasattr(self, 'audio_thread'):
+            self.audio_thread.join()
         Gtk.main_quit()
 
-    def run(self):
-        """Run the application."""
+    def run(self) -> None:
+        """Start the application."""
+        # Start audio processing in a separate thread
+        self.audio_thread = threading.Thread(target=self.audio_loop, daemon=True)
+        self.audio_thread.start()
         Gtk.main()
 
 
