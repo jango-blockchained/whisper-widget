@@ -48,11 +48,13 @@ def validate_settings(settings: Dict[str, Any]) -> None:
     Raises:
         ValueError: If any setting has an invalid value.
     """
-    model_sizes = ['tiny', 'base', 'small', 'medium', 'large']
-    trans_modes = ['continuous', 'clipboard']
+    model_sizes = ['tiny', 'base', 'small', 'medium', 'large', 'large-v3', 'large-v2', 'large-v3-turbo']
+    trans_modes = ['local', 'openai']  # How transcription is performed
+    output_modes = ['continuous', 'clipboard']  # How text is output
     
     validators = {
         'transcription_mode': lambda x: x in trans_modes,
+        'output_mode': lambda x: x in output_modes,
         'model_size': lambda x: x in model_sizes,
         'vad_sensitivity': lambda x: isinstance(x, int) and 1 <= x <= 3,
         'auto_detect_speech': lambda x: isinstance(x, bool),
@@ -91,7 +93,8 @@ def load_settings() -> Dict[str, Any]:
     config_dir = Path.home() / '.config' / 'whisper-widget'
     config_file = config_dir / 'config.json'
     default_settings: Dict[str, Any] = {
-        'transcription_mode': 'continuous',
+        'transcription_mode': 'local',  # local or openai
+        'output_mode': 'continuous',  # continuous or clipboard
         'model_size': 'base',
         'language': 'en',
         'vad_sensitivity': 3,
