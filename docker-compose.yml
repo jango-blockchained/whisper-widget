@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  whisper-widget:
+    build: .
+    container_name: whisper-widget
+    volumes:
+      # X11 socket for GUI
+      - /tmp/.X11-unix:/tmp/.X11-unix
+      # PulseAudio socket for audio
+      - /run/user/1000/pulse:/run/user/1000/pulse
+      # Home directory for config
+      - ${HOME}/.config/whisper-widget:/home/appuser/.config/whisper-widget
+      # Optional: Mount models directory to persist downloaded models
+      - ${HOME}/.cache/whisper:/home/appuser/.cache/whisper
+    environment:
+      - DISPLAY=${DISPLAY}
+      - PULSE_SERVER=unix:/run/user/1000/pulse/native
+      # Optional: OpenAI API key if using OpenAI transcription
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+    devices:
+      # Give access to audio devices
+      - /dev/snd:/dev/snd
+    network_mode: host # Required for X11 and system tray
+    restart: unless-stopped
+    # Security options for device access
+    security_opt:
+      - seccomp:unconfined
+    # Additional privileges needed for audio
+    privileged: true
+    # User mapping for proper permissions
+    user: "1000:1000" # Adjust these IDs to match your host user 
