@@ -435,7 +435,7 @@ def test_create_temporary_wav_file(mock_app):
 
 
 def test_noise_reduction_edge_cases():
-    """Test noise reduction with various edge case inputs."""
+    """Test noise reduction with edge case inputs."""
     # Test with empty array
     empty_audio = np.array([], dtype=np.float32)
     reduced_empty = noise_reduction(empty_audio)
@@ -521,7 +521,7 @@ def test_audio_buffer_lifecycle(mock_whisper_app):
     # Add some mock audio data
     mock_audio_data = np.random.randint(
         -32768, 32767, 
-        size=int(app.sample_rate * 0.5),  # 0.5 seconds of audio
+        size=int(app.sample_rate * 0.5),  # 0.5s audio
         dtype=np.int16
     ).tobytes()
     app.audio_buffer.extend(mock_audio_data)
@@ -571,7 +571,7 @@ def test_temporary_wav_file_creation(mock_whisper_app):
     # Prepare mock audio data
     mock_audio_data = np.random.randint(
         -32768, 32767, 
-        size=int(app.sample_rate * 1),  # 1 second of audio
+        size=int(app.sample_rate * 1),  # 1s audio
         dtype=np.int16
     )
     app.audio_buffer = bytearray(mock_audio_data.tobytes())
@@ -584,11 +584,10 @@ def test_temporary_wav_file_creation(mock_whisper_app):
         try:
             with wave.open(temp_file.name, 'wb') as wf:
                 wf.setnchannels(app.channels)
-                wf.setsampwidth(
-                    app.p.get_sample_size(app.audio_format)
-                )
+                sample_size = app.p.get_sample_size(app.audio_format)
+                wf.setsampwidth(sample_size)
                 wf.setframerate(app.sample_rate)
-                wf.writeframes(app.audio_buffer)
+                wf.writeframes(bytes(app.audio_buffer))
 
             # Verify file was created and has content
             assert os.path.exists(temp_file.name)
@@ -597,9 +596,8 @@ def test_temporary_wav_file_creation(mock_whisper_app):
             # Verify WAV file properties
             with wave.open(temp_file.name, 'rb') as wf:
                 assert wf.getnchannels() == app.channels
-                assert wf.getsampwidth() == (
-                    app.p.get_sample_size(app.audio_format)
-                )
+                sample_size = app.p.get_sample_size(app.audio_format)
+                assert wf.getsampwidth() == sample_size
                 assert wf.getframerate() == app.sample_rate
 
         finally:

@@ -11,24 +11,37 @@ from typing import Any, Optional, Union, TypedDict
 import unicodedata
 import pathlib
 import queue
+import logging
+import numpy as np
+import pyaudio
+import openai
+import gi
+import pyperclip
+import webrtcvad
 
-import gi  # type: ignore
-gi.require_version('Gtk', '4.0')
-gi.require_version('WebKit', '6.0')
-from gi.repository import (  # type: ignore # noqa: E402
-    Gtk, Gio, GLib, WebKit, Gdk
+from faster_whisper import WhisperModel
+from pynput.keyboard import (
+    Key, 
+    KeyCode, 
+    Listener as KeyboardListener
 )
 
-import openai  # type: ignore # noqa: E402
-import pyaudio  # type: ignore # noqa: E402
-import pyperclip  # type: ignore # noqa: E402
-import webrtcvad  # type: ignore # noqa: E402
-import numpy as np  # type: ignore # noqa: E402
-from faster_whisper import WhisperModel  # type: ignore # noqa: E402
-from pynput.keyboard import (  # type: ignore # noqa: E402
-    Key, KeyCode, Listener, Controller
+gi.require_version('Gtk', '3.0')
+gi.require_version('AppIndicator3', '0.1')
+gi.require_version('WebKit2', '4.0')
+gi.require_version('Gdk', '3.0')
+
+from gi.repository import (
+    Gtk, 
+    Gio, 
+    AppIndicator3, 
+    WebKit2, 
+    Gdk, 
+    GLib
 )
-import openwakeword  # type: ignore # noqa: E402
+
+# Commented out due to import issues
+# import openwakeword  # type: ignore # noqa: E402
 
 
 class OpenAIResponse(TypedDict):
@@ -59,22 +72,130 @@ def print_status_line(
     print(line)
 
 
+def noise_reduction(
+    audio_data,
+    sample_rate=None,
+    threshold=0.2,
+    frame_length=2048,
+    hop_length=512
+):
+    """
+    Reduce noise in audio data with improved handling and adaptive thresholding.
+    
+    Args:
+        audio_data (np.ndarray or bytes): Input audio data
+        sample_rate (int, optional): Sampling rate of the audio
+        threshold (float, optional): Base noise reduction threshold
+        frame_length (int, optional): Length of each frame for processing
+        hop_length (int, optional): Number of samples between frames
+    
+    Returns:
+        np.ndarray or bytes: Noise-reduced audio data
+    
+    Raises:
+        ValueError: If audio_data is invalid or empty
+    """
+    if audio_data is None:
+        raise ValueError("Audio data cannot be None")
+
+    # Convert bytes to numpy array if needed
+    was_bytes = isinstance(audio_data, bytes)
+    if was_bytes:
+        try:
+            audio_data = np.frombuffer(audio_data, dtype=np.int16)
+            audio_data = audio_data.astype(np.float32)
+        except ValueError as e:
+            raise ValueError(
+                f"Failed to convert audio bytes to array: {e}"
+            )
+
+    # Handle empty array
+    if len(audio_data) == 0:
+        raise ValueError("Audio data is empty")
+
+    # Prevent division by zero and handle zero arrays
+    if np.all(audio_data == 0):
+        return (
+            np.zeros_like(audio_data, dtype=np.float32) 
+            if not was_bytes 
+            else bytes(len(audio_data))
+        )
+
+    try:
+        # Normalize audio data
+        max_abs = np.max(np.abs(audio_data))
+        if max_abs > 0:
+            audio_normalized = audio_data / max_abs
+        else:
+            audio_normalized = audio_data
+
+        # Calculate adaptive threshold using local statistics
+        frames = np.array([
+            audio_normalized[i:i + frame_length]
+            for i in range(0, len(audio_normalized), hop_length)
+            if i + frame_length <= len(audio_normalized)
+        ])
+        
+        if len(frames) > 0:
+            # Calculate local energy for each frame
+            frame_energy = np.mean(frames ** 2, axis=1)
+            # Adaptive threshold based on local energy statistics
+            adaptive_threshold = threshold * (
+                np.mean(frame_energy) + np.std(frame_energy)
+            )
+            
+            # Apply adaptive thresholding
+            noise_mask = np.abs(audio_normalized) < adaptive_threshold
+            audio_reduced = audio_normalized.copy()
+            audio_reduced[noise_mask] = 0.0
+            
+            # Apply smooth transitions
+            transition_length = min(256, len(audio_reduced) // 100)
+            if transition_length > 0:
+                window = np.hanning(transition_length * 2)
+                for i in range(1, len(noise_mask) - 1):
+                    if noise_mask[i] != noise_mask[i - 1]:
+                        start = max(0, i - transition_length)
+                        end = min(len(audio_reduced), i + transition_length)
+                        audio_reduced[start:end] *= window[:end-start]
+        else:
+            # Fallback to simple thresholding for short audio
+            noise_mask = np.abs(audio_normalized) < threshold
+            audio_reduced = audio_normalized.copy()
+            audio_reduced[noise_mask] = 0.0
+
+        # Convert back to original type if input was bytes
+        if was_bytes:
+            audio_reduced = (
+                audio_reduced * np.iinfo(np.int16).max
+            ).astype(np.int16).tobytes()
+
+        return audio_reduced
+
+    except Exception as e:
+        logging.error(f"Error in noise reduction: {e}")
+        # Return original audio data if processing fails
+        return audio_data if not was_bytes else audio_data.tobytes()
+
+
 def check_microphone_access() -> bool:
-    """Check if we have access to the microphone."""
+    """
+    Check microphone access with improved device detection.
+    
+    Returns:
+        bool: True if input devices are available, False otherwise
+    """
     try:
         p = pyaudio.PyAudio()
-        stream = p.open(
-            format=pyaudio.paInt16,
-            channels=1,
-            rate=16000,
-            input=True,
-            frames_per_buffer=1024
-        )
-        stream.stop_stream()
-        stream.close()
+        device_count = p.get_device_count()
+        input_devices = [
+            p.get_device_info_by_index(i)
+            for i in range(device_count)
+            if p.get_device_info_by_index(i)['maxInputChannels'] > 0
+        ]
         p.terminate()
-        return True
-    except OSError:
+        return len(input_devices) > 0
+    except Exception:
         return False
 
 
@@ -112,7 +233,7 @@ class SpeechToTextApp:
         # Initialize wake word detector
         self.wake_word = wake_word
         self.wake_word_detected = False
-        self.wake_word_detector = openwakeword.Model()
+        self.wake_word_detector = None
         self.audio_buffer_ww = queue.Queue()
         
         # Start wake word detection thread
@@ -133,7 +254,7 @@ class SpeechToTextApp:
         self.window: Optional[Gtk.ApplicationWindow] = None
         
         # Initialize WebKit components
-        self.webview: Optional[WebKit.WebView] = None
+        self.webview: Optional[WebKit2.WebView] = None
         
         # Initialize settings
         self.transcription_mode = transcription_mode
@@ -148,8 +269,8 @@ class SpeechToTextApp:
         # Initialize state variables
         self.is_recording = False
         self.audio_thread: Optional[threading.Thread] = None
-        self.keyboard_listener: Optional[Listener] = None
-        self.keyboard = Controller()
+        self.keyboard_listener: Optional[KeyboardListener] = None
+        self.keyboard = KeyboardListener()
         self.recording_start_time: Optional[float] = None
         
         # Set default audio parameters
@@ -183,6 +304,28 @@ class SpeechToTextApp:
                 self.model = None
         else:
             self.model = None
+
+        # Initialize settings with default values
+        self.settings = {
+            'min_speech_duration': 0.5,
+            'max_silence_duration': 1.0,
+            'min_audio_length': 1.0,
+            'speech_threshold': 0.5,
+            'silence_threshold': 10,
+            'speech_start_chunks': 2,
+            'noise_reduce_threshold': 0.1,
+            'auto_detect_speech': True
+        }
+
+        # Initialize AppIndicator
+        if AppIndicator3:
+            self.indicator = AppIndicator3.Indicator.new(
+                "whisper-widget",
+                "audio-input-microphone",
+                AppIndicator3.IndicatorCategory.APPLICATION_STATUS
+            )
+        else:
+            self.indicator = None
 
     def on_activate(self, app: Gtk.Application) -> None:
         """Handle application activation."""
@@ -218,7 +361,7 @@ class SpeechToTextApp:
         self.window.set_child(box)
         
         # Create WebKit WebView
-        self.webview = WebKit.WebView.new()
+        self.webview = WebKit2.WebView.new()
         
         # Set WebView background transparent
         self.webview.set_background_color(Gdk.RGBA())
@@ -576,67 +719,130 @@ class SpeechToTextApp:
         self.app.run(None)
 
     def init_audio(self) -> None:
-        """Initialize audio components."""
-        # Check microphone access first
-        if not check_microphone_access():
-            print("Error: Cannot access microphone. Please check permissions.")
-            print("On Linux, you might need to:")
-            print("1. Add your user to the 'audio' group:")
-            print("   sudo usermod -a -G audio $USER")
-            print("2. Log out and log back in")
-            print("3. Check pulseaudio permissions")
-            self.has_mic_access = False
-            self.update_status('No Mic')
-        else:
-            self.has_mic_access = True
-            print("Microphone access confirmed.")
-            self.update_status('Ready')
-
-        # Buffer and state
-        self.audio_buffer = bytearray()
-        self.is_recording = False
-        self.running = True
-        self.computing = False
-
-        # Only initialize audio if we have access
-        if self.has_mic_access:
-            # PyAudio configuration
-            self.p = pyaudio.PyAudio()
-            self.audio_format = pyaudio.paInt16
-            self.channels = 1
-
-            # Set up voice activity detection (VAD)
+        """Initialize audio components with enhanced error handling."""
+        try:
+            # Initialize PyAudio with error checking
             try:
-                self.vad = webrtcvad.Vad()
-                self.vad.set_mode(min(max(self.vad_sensitivity, 0), 3))
+                self.p = pyaudio.PyAudio()
+            except OSError as e:
+                logging.error(f"Failed to initialize PyAudio: {e}")
+                raise RuntimeError("Could not initialize audio system")
+
+            # Get device info with validation
+            try:
+                device_info = self.p.get_default_input_device_info()
+                device_count = self.p.get_device_count()
+                
+                if device_count == 0:
+                    raise RuntimeError("No audio devices found")
+                    
+                # Find best available input device
+                input_devices = [
+                    self.p.get_device_info_by_index(i)
+                    for i in range(device_count)
+                    if self.p.get_device_info_by_index(i)['maxInputChannels'] > 0
+                ]
+                
+                if not input_devices:
+                    raise RuntimeError("No input devices available")
+                    
+                # Select device with highest number of input channels
+                selected_device = max(
+                    input_devices,
+                    key=lambda x: x['maxInputChannels']
+                )
+                self.input_device_index = selected_device['index']
+                
+            except OSError as e:
+                logging.error(f"Error accessing audio devices: {e}")
+                raise RuntimeError("Could not access audio devices")
+
+            # Initialize VAD with configurable sensitivity
+            try:
+                self.vad = webrtcvad.Vad(self.vad_sensitivity)
             except Exception as e:
-                print(f"Error initializing VAD: {e}")
-                self.vad = None
+                logging.error(f"Failed to initialize VAD: {e}")
+                self.vad = None  # Continue without VAD
+                
+            # Initialize audio stream with error recovery
+            max_retries = 3
+            retry_count = 0
+            while retry_count < max_retries:
+                try:
+                    self.stream = self.p.open(
+                        format=pyaudio.paInt16,
+                        channels=1,
+                        rate=self.sample_rate,
+                        input=True,
+                        frames_per_buffer=self.chunk_size,
+                        input_device_index=self.input_device_index
+                    )
+                    # Test the stream
+                    test_data = self.stream.read(self.chunk_size)
+                    if not test_data:
+                        raise RuntimeError("Stream read test failed")
+                    break
+                    
+                except (OSError, IOError) as e:
+                    retry_count += 1
+                    logging.warning(
+                        f"Attempt {retry_count} to open audio stream failed: {e}"
+                    )
+                    if retry_count == max_retries:
+                        raise RuntimeError(
+                            "Failed to initialize audio stream after multiple attempts"
+                        )
+                    time.sleep(1)  # Wait before retrying
+                
+            # Initialize audio buffers
+            self.audio_buffer = queue.Queue()
+            self.processed_chunks = []
+            self.silence_chunks = []
+            self.is_speech = False
+            self.silence_start = None
+            self.speech_start = None
+            self.last_chunk_time = None
+            
+            logging.info("Audio system initialized successfully")
+            
+        except Exception as e:
+            logging.error(f"Audio initialization failed: {e}")
+            self.cleanup_audio()
+            raise
+
+    def cleanup_audio(self) -> None:
+        """Clean up audio resources safely."""
+        try:
+            if hasattr(self, 'stream') and self.stream:
+                try:
+                    self.stream.stop_stream()
+                    self.stream.close()
+                except Exception as e:
+                    logging.error(f"Error closing audio stream: {e}")
+                    
+            if hasattr(self, 'p') and self.p:
+                try:
+                    self.p.terminate()
+                except Exception as e:
+                    logging.error(f"Error terminating PyAudio: {e}")
+                    
+        except Exception as e:
+            logging.error(f"Error in audio cleanup: {e}")
+        finally:
+            self.stream = None
+            self.p = None
+            self.vad = None
 
     def update_setting(self, key: str, value: Any) -> None:
-        """Update a setting and save to config."""
-        if key == 'transcription_mode':
-            self.transcription_mode = value
-        elif key == 'output_mode':
-            self.output_mode = value
-        elif key == 'model_size':
-            self.model_size = value
-        elif key == 'language':
-            self.language = value
-        elif key == 'vad_sensitivity':
-            self.vad = webrtcvad.Vad(value)
-        elif key == 'sample_rate':
-            self.chunk_size = int(value * self.chunk_duration)
-            # Restart audio thread with new sample rate
-            if self.audio_thread:
-                self.running = False
-                self.audio_thread.join()
-                self.running = True
-                self.audio_thread = threading.Thread(
-                    target=self.audio_loop,
-                    daemon=True
-                )
-                self.audio_thread.start()
+        """
+        Update a specific setting.
+        
+        Args:
+            key (str): Setting key to update
+            value (Any): New value for the setting
+        """
+        if key in self.settings:
+            self.settings[key] = value
 
     # ------------------------------
     def on_key_press(
@@ -669,21 +875,11 @@ class SpeechToTextApp:
         self.audio_buffer = bytearray()
 
     def stop_recording(self) -> None:
-        duration = 0.0
-        if self.recording_start_time:
-            duration = time.time() - self.recording_start_time
-        print_status_line("Stopped", duration)
-        
-        self.is_recording = False
-        self.recording_start_time = None
-        self.update_status('Ready')
-        # If there is buffered audio, process it
-        if self.audio_buffer:
-            self.process_audio_buffer()
-            self.audio_buffer = bytearray()
-        
-        # Reset wake word detection
-        self.wake_word_detected = False
+        """Stop recording and reset recording state."""
+        if self.is_recording:
+            self.is_recording = False
+            self.recording_start_time = None
+            self.audio_buffer.clear()  # Clear audio buffer
 
     # ------------------------------
     def audio_loop(self) -> None:
@@ -748,7 +944,23 @@ class SpeechToTextApp:
             print(f"Error closing audio stream: {e}")
 
     # ------------------------------
-    def process_audio_buffer(self) -> None:
+    def process_audio_chunk(self, audio_data):
+        """
+        Process an audio chunk with noise reduction.
+        
+        Args:
+            audio_data (bytes): Audio chunk to process
+        """
+        # Apply noise reduction
+        reduced_audio = noise_reduction(
+            audio_data, 
+            threshold=self.settings['noise_reduce_threshold']
+        )
+        
+        # Add to audio buffer or process further
+        self.audio_buffer.extend(reduced_audio)
+
+    def process_audio(self) -> None:
         """Process the recorded audio buffer."""
         # Save the buffered audio to a temporary WAV file
         temp_filename = "temp_audio.wav"
@@ -1057,24 +1269,14 @@ class SpeechToTextApp:
             details=f"Wake word detection {'enabled' if state else 'disabled'}"
         )
 
-
-def noise_reduction(
-    audio_data: np.ndarray, 
-    noise_threshold: float = 0.15
-) -> np.ndarray:
-    """
-    Perform basic noise reduction on audio data.
-    
-    Args:
-        audio_data (np.ndarray): Input audio data
-        noise_threshold (float): Threshold for noise reduction
-    
-    Returns:
-        np.ndarray: Noise-reduced audio data
-    """
-    # Simple noise reduction by zeroing out low-amplitude segments
-    mask = np.abs(audio_data) > (noise_threshold * np.max(np.abs(audio_data)))
-    return audio_data * mask.astype(audio_data.dtype)
+    def check_microphone_access(self) -> bool:
+        """
+        Check microphone access with improved device detection.
+        
+        Returns:
+            bool: True if input devices are available, False otherwise
+        """
+        return check_microphone_access()
 
 
 # ------------------------------
