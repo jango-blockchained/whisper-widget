@@ -1,0 +1,59 @@
+[MASTER]
+# Python path setup
+init-hook='import sys; sys.path.append(".")'
+jobs=0
+
+# File handling
+ignore=CVS
+ignore-patterns=
+ignore-paths=
+
+# Module handling
+ignored-modules=numpy,torch,cv2,gi.repository
+ignored-classes=Wave_read,Wave_write
+
+[MESSAGES CONTROL]
+# Disable specific warnings
+disable=
+    C0111,  # missing-docstring
+    C0103,  # invalid-name
+    C0303,  # trailing-whitespace
+    C0304,  # missing-final-newline
+    W0613,  # unused-argument
+    W0621,  # redefined-outer-name
+    W0622,  # redefined-builtin
+    R0903,  # too-few-public-methods
+    R0913,  # too-many-arguments
+    R0914,  # too-many-locals
+    R0915,  # too-many-statements
+    R0801,  # duplicate-code
+    E1101   # no-member (for Wave_read/Wave_write)
+
+[FORMAT]
+max-line-length=100
+max-module-lines=1000
+indent-after-paren=4
+
+[BASIC]
+# Naming styles
+good-names=i,j,k,ex,Run,_,fp,id
+variable-naming-style=snake_case
+class-naming-style=PascalCase
+function-naming-style=snake_case
+
+[SIMILARITIES]
+min-similarity-lines=10
+ignore-comments=yes
+ignore-docstrings=yes
+ignore-imports=yes
+
+[VARIABLES]
+dummy-variables-rgx=_$|dummy|unused_.*
+
+[TYPECHECK]
+# List of module names for which member attributes should not be checked
+ignored-modules=numpy,torch,cv2,gi.repository
+
+[MISCELLANEOUS]
+# List of note tags to take into consideration
+notes=FIXME,XXX,TODO 

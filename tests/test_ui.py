@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import MagicMock, patch
-from whisper_widget import SpeechToTextApp
+from app import SpeechToTextApp
 
 
 @pytest.fixture
@@ -36,9 +36,9 @@ def mock_gtk():
 @pytest.fixture
 def mock_app(mock_gtk, temp_config_dir):
     """Create a mock app with mocked UI components."""
-    with patch('whisper_widget.check_microphone_access', return_value=True), \
-         patch('whisper_widget.WhisperModel') as mock_model, \
-         patch('whisper_widget.webrtcvad.Vad') as mock_vad:
+    with patch('app.check_microphone_access', return_value=True), \
+         patch('app.WhisperModel') as mock_model, \
+         patch('app.webrtcvad.Vad') as mock_vad:
         
         # Set up mock model
         mock_model_instance = MagicMock()
@@ -98,7 +98,7 @@ def test_model_size_setting(mock_app):
     mock_model.return_value = mock_model_instance
     
     # Replace the WhisperModel class
-    with patch('whisper_widget.WhisperModel', mock_model):
+    with patch('app.WhisperModel', mock_model):
         # Update the setting and create new model
         mock_app.update_setting('model_size', 'small')
         
@@ -126,7 +126,7 @@ def test_vad_sensitivity_setting(mock_app):
     mock_vad.return_value = mock_vad_instance
     
     # Replace the Vad class
-    with patch('whisper_widget.webrtcvad.Vad', mock_vad):
+    with patch('app.webrtcvad.Vad', mock_vad):
         # Update the setting and create new VAD
         mock_app.update_setting('vad_sensitivity', 2)
         

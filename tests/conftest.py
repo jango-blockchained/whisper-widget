@@ -92,8 +92,8 @@ def mock_gtk():
 @pytest.fixture
 def mock_app(mock_audio, mock_gtk, temp_config_dir):
     """Create a mock app with all components mocked."""
-    with patch('whisper_widget.WhisperModel') as mock_model, \
-         patch('whisper_widget.webrtcvad.Vad') as mock_vad:
+    with patch('app.WhisperModel') as mock_model, \
+         patch('app.webrtcvad.Vad') as mock_vad:
         
         # Set up mock model
         mock_model_instance = MagicMock()
@@ -105,7 +105,7 @@ def mock_app(mock_audio, mock_gtk, temp_config_dir):
         mock_vad_instance.is_speech.return_value = True
         
         # Import here to avoid circular imports
-        from whisper_widget import SpeechToTextApp
+        from app import SpeechToTextApp
         app = SpeechToTextApp()
         
         # Replace real components with mocks

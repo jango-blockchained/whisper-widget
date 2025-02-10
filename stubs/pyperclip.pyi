@@ -1,0 +1,19 @@
+from typing import Optional
+
+
+def copy(text: str) -> None: ...
+
+
+def paste() -> str: ...
+
+
+def waitForPaste(timeout: Optional[float] = None) -> str: ...
+
+
+def waitForNewPaste(timeout: Optional[float] = None) -> str: ...
+
+
+def determine_clipboard() -> None: ...
+
+
+def set_clipboard(clipboard: str) -> None: ... 

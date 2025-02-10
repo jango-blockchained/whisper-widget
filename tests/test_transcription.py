@@ -2,15 +2,15 @@ import pytest
 from unittest.mock import MagicMock, patch
 import numpy as np
 import wave
-from whisper_widget import SpeechToTextApp
+from app import SpeechToTextApp
 import sys
 
 
 @pytest.fixture
 def mock_app(mock_audio):
     """Create a mock app for transcription testing."""
-    with patch('whisper_widget.WhisperModel') as mock_model, \
-         patch('whisper_widget.webrtcvad.Vad') as mock_vad:
+    with patch('app.WhisperModel') as mock_model, \
+         patch('app.webrtcvad.Vad') as mock_vad:
         
         # Set up mock model
         mock_model_instance = MagicMock()
@@ -83,7 +83,7 @@ def test_openai_transcription(mock_app, tmp_path):
     mock_openai.Audio.transcribe.return_value = {"text": "OpenAI transcription"}
     
     # Patch the openai module at the function level
-    with patch('whisper_widget.openai', mock_openai):
+    with patch('app.openai', mock_openai):
         result = mock_app.transcribe_audio(str(test_file))
         assert result == "OpenAI transcription"
         mock_openai.Audio.transcribe.assert_called_once_with(
@@ -118,7 +118,7 @@ def test_transcription_error_handling(mock_app, tmp_path):
     mock_openai.Audio.transcribe.side_effect = Exception("API error")
     
     # Patch the openai module at the function level
-    with patch('whisper_widget.openai', mock_openai):
+    with patch('app.openai', mock_openai):
         result = mock_app.transcribe_audio(str(test_file))
         assert result == ""
         mock_app.indicator.set_icon.assert_called()

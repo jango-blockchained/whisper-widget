@@ -33,4 +33,4 @@ ENV DISPLAY=:0
 ENV PULSE_SERVER=unix:/run/user/1000/pulse/native
 
 # Command to run the application
-CMD ["python", "whisper_widget.py"] 
+CMD ["python", "app.py"] 

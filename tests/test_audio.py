@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import MagicMock, patch
 import numpy as np
-from whisper_widget import (
+from app import (
     check_microphone_access,
     noise_reduction,
     SpeechToTextApp
@@ -85,8 +85,8 @@ def test_noise_reduction():
 @pytest.fixture
 def mock_whisper_app(mock_audio):
     """Create a mock whisper app with mocked components."""
-    with patch('whisper_widget.WhisperModel') as mock_model, \
-         patch('whisper_widget.webrtcvad.Vad') as mock_vad:
+    with patch('app.WhisperModel') as mock_model, \
+         patch('app.webrtcvad.Vad') as mock_vad:
         
         # Set up mock model
         mock_model_instance = MagicMock()

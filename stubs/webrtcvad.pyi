@@ -1,0 +1,13 @@
+from typing import Union, Optional
+
+class Vad:
+    def __init__(self, mode: int = 0) -> None: ...
+    def set_mode(self, mode: int) -> None: ...
+    def is_speech(
+        self,
+        buf: Union[bytes, bytearray],
+        sample_rate: int,
+        length: Optional[int] = None
+    ) -> bool: ...
+
+def valid_rate_and_frame_length(rate: int, frame_length: int) -> bool: ... 
