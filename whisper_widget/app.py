@@ -1,4 +1,4 @@
-"""Speech-to-text application using GTK 4 and Whisper."""
+"""Speech-to-text application using GTK 4."""
 
 from __future__ import annotations
 
@@ -8,23 +8,27 @@ import time
 import wave
 from datetime import datetime
 from typing import Any, Optional, Union, TypedDict
+import unicodedata
+import pathlib
+import queue
 
 import gi  # type: ignore
 gi.require_version('Gtk', '4.0')
+gi.require_version('WebKit', '6.0')
 from gi.repository import (  # type: ignore # noqa: E402
-    Gtk, Gio, GLib
+    Gtk, Gio, GLib, WebKit, Gdk
 )
 
 import openai  # type: ignore # noqa: E402
 import pyaudio  # type: ignore # noqa: E402
 import pyperclip  # type: ignore # noqa: E402
 import webrtcvad  # type: ignore # noqa: E402
+import numpy as np  # type: ignore # noqa: E402
 from faster_whisper import WhisperModel  # type: ignore # noqa: E402
 from pynput.keyboard import (  # type: ignore # noqa: E402
     Key, KeyCode, Listener, Controller
 )
-
-from whisper_widget.utils import noise_reduction  # noqa: E402
+import openwakeword  # type: ignore # noqa: E402
 
 
 class OpenAIResponse(TypedDict):
@@ -48,7 +52,10 @@ def print_status_line(
     """Print a status line with current time and information."""
     current_time = datetime.now().strftime("%H:%M:%S")
     duration_str = f"{duration:.1f}s" if duration > 0 else ""
-    line = f"{current_time:12} | {status:10} | {duration_str:10} | {mode:8} | {details}"
+    line = (
+        f"{current_time:12} | {status:10} | {duration_str:10} | "
+        f"{mode:8} | {details}"
+    )
     print(line)
 
 
@@ -80,10 +87,11 @@ class SpeechToTextApp:
         output_mode: str = "continuous",
         model_size: str = "base",
         language: str = "en",
-        vad_sensitivity: int = 3,
+        vad_sensitivity: int = 2,
         auto_detect_speech: bool = True,
         add_punctuation: bool = True,
         openai_api_key: Optional[str] = None,
+        wake_word: str = "hey computer",
     ) -> None:
         """Initialize the application."""
         # Print initial header
@@ -96,9 +104,23 @@ class SpeechToTextApp:
         print(f"VAD Sensitivity: {vad_sensitivity}")
         print(f"Auto-detect Speech: {auto_detect_speech}")
         print(f"Add Punctuation: {add_punctuation}")
+        print(f"Wake Word: {wake_word}")
         print("==========================================\n")
         
         print_status_header()
+        
+        # Initialize wake word detector
+        self.wake_word = wake_word
+        self.wake_word_detected = False
+        self.wake_word_detector = openwakeword.Model()
+        self.audio_buffer_ww = queue.Queue()
+        
+        # Start wake word detection thread
+        self.wake_word_thread = threading.Thread(
+            target=self._wake_word_loop,
+            daemon=True
+        )
+        self.wake_word_thread.start()
         
         # Create application
         self.app = Gtk.Application.new(
@@ -110,9 +132,8 @@ class SpeechToTextApp:
         # Initialize window as None - will be created in on_activate
         self.window: Optional[Gtk.ApplicationWindow] = None
         
-        # Create status label
-        self.status_label = Gtk.Label()
-        self.status_label.set_text("Ready")
+        # Initialize WebKit components
+        self.webview: Optional[WebKit.WebView] = None
         
         # Initialize settings
         self.transcription_mode = transcription_mode
@@ -133,71 +154,103 @@ class SpeechToTextApp:
         
         # Set default audio parameters
         self.sample_rate = 16000
-        self.min_speech_duration = 0.2
-        self.max_silence_duration = 0.5
-        self.min_audio_length = 0.3
+        self.min_speech_duration = 0.5
+        self.max_silence_duration = 1.0
+        self.min_audio_length = 0.5
         self.speech_threshold = 0.5
-        self.silence_threshold = 5
-        self.speech_start_chunks = 1
-        self.noise_reduce_threshold = 0.1
+        self.silence_threshold = 15
+        self.speech_start_chunks = 4
+        self.noise_reduce_threshold = 0.15
+        self.chunk_duration = 0.05
+        self.chunk_size = int(self.sample_rate * self.chunk_duration)
         
         if openai_api_key:
             openai.api_key = openai_api_key
         
         # Initialize audio components
         self.init_audio()
-
-    def update_status(self, status: str) -> None:
-        """Update the status label and print status line."""
-        self.status_label.set_text(status)
-        duration = 0.0
-        if self.recording_start_time and self.is_recording:
-            duration = time.time() - self.recording_start_time
         
-        details = []
-        if self.transcription_mode == "local":
-            details.append(f"Model: {self.model_size}")
-        if self.auto_detect_speech:
-            details.append("Auto-detect")
-        if self.add_punctuation:
-            details.append("Punctuation")
-            
-        print_status_line(
-            status,
-            duration,
-            self.transcription_mode,
-            ", ".join(details)
-        )
+        # Initialize Whisper model if using local transcription
+        if self.transcription_mode == 'local':
+            try:
+                self.model = WhisperModel(
+                    model_size_or_path=self.model_size,
+                    device="cpu",
+                    compute_type="int8"
+                )
+            except Exception as e:
+                print(f"Error initializing Whisper model: {e}")
+                self.model = None
+        else:
+            self.model = None
 
     def on_activate(self, app: Gtk.Application) -> None:
         """Handle application activation."""
         # Create the main window
         self.window = Gtk.ApplicationWindow.new(app)
         self.window.set_title("Whisper Widget")
-        self.window.set_default_size(400, 100)
+        self.window.set_default_size(400, 300)
         
-        # Create header bar
-        header = Gtk.HeaderBar()
-        self.window.set_titlebar(header)
+        # Make window transparent and borderless
+        self.window.set_decorated(False)
         
-        # Create menu button
-        menu_button = Gtk.MenuButton()
-        header.pack_end(menu_button)
+        # Set up transparency
+        css_provider = Gtk.CssProvider()
+        css_provider.load_from_data(
+            b"""
+            window {
+                background-color: transparent;
+            }
+            box {
+                min-height: 100px;
+            }
+            """
+        )
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(),
+            css_provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
         
-        # Create menu model
+        # Create a box for layout
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.set_size_request(400, 100)  # Set minimum size
+        self.window.set_child(box)
+        
+        # Create WebKit WebView
+        self.webview = WebKit.WebView.new()
+        
+        # Set WebView background transparent
+        self.webview.set_background_color(Gdk.RGBA())
+        
+        # Set WebView size
+        self.webview.set_size_request(400, 100)
+        
+        # Load the visualization HTML file
+        html_path = os.path.join(
+            pathlib.Path(__file__).parent,
+            'static',
+            'index.html'
+        )
+        self.webview.load_uri(f'file://{html_path}')
+        
+        # Add WebView to box
+        box.append(self.webview)
+        
+        # Create a popup menu
         menu = Gio.Menu.new()
         
         # Add transcription mode submenu
         trans_menu = Gio.Menu.new()
         for mode in ['local', 'openai']:
             action = f'app.trans_mode_{mode}'
-            self.app.add_action(
-                Gio.SimpleAction.new_stateful(
-                    f'trans_mode_{mode}',
-                    None,
-                    GLib.Variant.new_boolean(self.transcription_mode == mode)
-                )
+            action_obj = Gio.SimpleAction.new_stateful(
+                f'trans_mode_{mode}',
+                None,
+                GLib.Variant.new_boolean(self.transcription_mode == mode)
             )
+            action_obj.connect('activate', self._on_trans_mode_change)
+            self.app.add_action(action_obj)
             trans_menu.append(mode.capitalize(), action)
         menu.append_submenu('Transcription Mode', trans_menu)
         
@@ -257,6 +310,75 @@ class SpeechToTextApp:
             lang_menu.append(name, action)
         menu.append_submenu('Language', lang_menu)
         
+        # Add Speech Detection Settings submenu
+        detect_menu = Gio.Menu.new()
+        
+        # VAD Sensitivity submenu
+        vad_menu = Gio.Menu.new()
+        for level in [1, 2, 3]:
+            action = f'app.vad_level_{level}'
+            action_obj = Gio.SimpleAction.new_stateful(
+                f'vad_level_{level}',
+                None,
+                GLib.Variant.new_boolean(self.vad_sensitivity == level)
+            )
+            action_obj.connect('activate', self._on_vad_level_change)
+            self.app.add_action(action_obj)
+            vad_menu.append(f'Level {level}', action)
+        detect_menu.append_submenu('VAD Sensitivity', vad_menu)
+        
+        # Speech Start Settings
+        start_menu = Gio.Menu.new()
+        for chunks in [1, 2, 3, 4]:
+            action = f'app.speech_start_{chunks}'
+            action_obj = Gio.SimpleAction.new_stateful(
+                f'speech_start_{chunks}',
+                None,
+                GLib.Variant.new_boolean(self.speech_start_chunks == chunks)
+            )
+            action_obj.connect('activate', self._on_speech_start_change)
+            self.app.add_action(action_obj)
+            start_menu.append(f'{chunks} chunk{"s" if chunks > 1 else ""}', action)
+        detect_menu.append_submenu('Speech Start Threshold', start_menu)
+        
+        # Silence Settings
+        silence_menu = Gio.Menu.new()
+        for threshold in [3, 5, 7, 10]:
+            action = f'app.silence_threshold_{threshold}'
+            action_obj = Gio.SimpleAction.new_stateful(
+                f'silence_threshold_{threshold}',
+                None,
+                GLib.Variant.new_boolean(self.silence_threshold == threshold)
+            )
+            action_obj.connect('activate', self._on_silence_threshold_change)
+            self.app.add_action(action_obj)
+            silence_menu.append(f'{threshold} chunks', action)
+        detect_menu.append_submenu('Silence Threshold', silence_menu)
+        
+        # Duration Settings
+        duration_menu = Gio.Menu.new()
+        durations = [
+            ('min_speech', 'Min Speech', [0.2, 0.5, 1.0], self.min_speech_duration),
+            ('max_silence', 'Max Silence', [0.5, 1.0, 2.0], self.max_silence_duration),
+            ('min_audio', 'Min Audio', [0.3, 0.5, 1.0], self.min_audio_length)
+        ]
+        for setting, label, values, current in durations:
+            submenu = Gio.Menu.new()
+            for value in values:
+                action = f'app.{setting}_{str(value).replace(".", "_")}'
+                action_obj = Gio.SimpleAction.new_stateful(
+                    f'{setting}_{str(value).replace(".", "_")}',
+                    None,
+                    GLib.Variant.new_boolean(abs(current - value) < 0.01)
+                )
+                action_obj.connect('activate', self._on_duration_change)
+                self.app.add_action(action_obj)
+                submenu.append(f'{value}s', action)
+            duration_menu.append_submenu(label, submenu)
+        detect_menu.append_submenu('Duration Settings', duration_menu)
+        
+        menu.append_submenu('Speech Detection', detect_menu)
+        
         menu.append('Auto-detect Speech', 'app.auto_detect')
         self.app.add_action(
             Gio.SimpleAction.new_stateful(
@@ -275,50 +397,120 @@ class SpeechToTextApp:
             )
         )
         
+        # Add wake word detection toggle to the menu
+        menu.append('Wake Word Detection', 'app.wake_word_toggle')
+        self.app.add_action(
+            Gio.SimpleAction.new_stateful(
+                'wake_word_toggle',
+                None,
+                GLib.Variant.new_boolean(self.wake_word_detected)
+            )
+        )
+        
         menu.append('Quit', 'app.quit')
         quit_action = Gio.SimpleAction.new('quit', None)
         quit_action.connect('activate', self.quit)
         self.app.add_action(quit_action)
         
-        # Set menu model
-        menu_button.set_menu_model(menu)
+        # Create a popover for the menu
+        popover = Gtk.PopoverMenu.new_from_model(menu)
         
-        # Create a vertical box for layout
-        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        self.window.set_child(vbox)
+        # Make the window respond to right-click for menu
+        right_click = Gtk.GestureClick.new()
+        right_click.set_button(3)  # Right mouse button
+        right_click.connect('pressed', self._on_right_click, popover)
+        self.window.add_controller(right_click)
         
-        # Add status label to window
-        vbox.append(self.status_label)
-        
-        # Create record button
-        record_button = Gtk.Button(label="Record")
-        record_button.connect("clicked", self._on_record_clicked)
-        vbox.append(record_button)
+        # Make the window draggable
+        drag = Gtk.GestureDrag.new()
+        drag.connect('drag-begin', self._on_drag_begin)
+        drag.connect('drag-update', self._on_drag_update)
+        self.window.add_controller(drag)
         
         # Show the window
         self.window.present()
 
-    def _on_trans_mode_change(self, action: Gio.SimpleAction, parameter: None) -> None:
+    def update_status(self, status: str) -> None:
+        """Update the status and visualization."""
+        if self.webview:
+            # Map status to visualization state
+            state = 'idle'
+            if status == 'Recording':
+                state = 'recording'
+            elif status in ['Computing', 'Transcribing']:
+                state = 'thinking'
+            
+            # Update visualization
+            js = (
+                'window.postMessage('
+                f'{{"type": "state", "value": "{state}"}}, "*")'
+            )
+            self.webview.evaluate_javascript(js, -1, None, None, None)
+        
+        # Print status line
+        duration = 0.0
+        if self.recording_start_time and self.is_recording:
+            duration = time.time() - self.recording_start_time
+        
+        details = []
+        if self.transcription_mode == "local":
+            details.append(f"Model: {self.model_size}")
+        if self.auto_detect_speech:
+            details.append("Auto-detect")
+        if self.add_punctuation:
+            details.append("Punctuation")
+            
+        print_status_line(
+            status,
+            duration,
+            self.transcription_mode,
+            ", ".join(details)
+        )
+
+    def _on_trans_mode_change(
+        self, 
+        action: Gio.SimpleAction, 
+        parameter: None
+    ) -> None:
         """Handle transcription mode change."""
         mode = action.get_name().replace('trans_mode_', '')
         self.transcription_mode = mode
+        
+        # Update action state
+        action.set_state(GLib.Variant.new_boolean(True))
+        
+        # Set other transcription mode actions to false
+        for act in self.app.list_actions():
+            is_trans_mode = act.startswith('trans_mode_')
+            is_different_action = act != action.get_name()
+            if is_trans_mode and is_different_action:
+                self.app.lookup_action(act).set_state(
+                    GLib.Variant.new_boolean(False)
+                )
         
         # Update model availability
         if mode == 'local':
             try:
                 self.model = WhisperModel(
-                    self.model_size,
+                    model_size_or_path=self.model_size,
                     device="cpu",
                     compute_type="int8"
                 )
             except Exception as e:
-                print(f"Error initializing Whisper model: {e}")
+                error_msg = f"Error initializing Whisper model: {e}"
+                print(error_msg)
                 self.model = None
         else:  # openai
             if self.openai_api_key:
                 openai.api_key = self.openai_api_key
             else:
                 print("Warning: OpenAI API key not set")
+                
+        print_status_line(
+            "Settings",
+            mode=mode,
+            details=f"Transcription mode changed to {mode}"
+        )
 
     def _on_output_mode_change(self, action: Gio.SimpleAction, parameter: None) -> None:
         """Handle output mode change."""
@@ -410,12 +602,16 @@ class SpeechToTextApp:
         if self.has_mic_access:
             # PyAudio configuration
             self.p = pyaudio.PyAudio()
-            self.chunk_size = int(16000 * 0.03)
             self.audio_format = pyaudio.paInt16
             self.channels = 1
 
             # Set up voice activity detection (VAD)
-            self.vad = webrtcvad.Vad(self.vad_sensitivity)
+            try:
+                self.vad = webrtcvad.Vad()
+                self.vad.set_mode(min(max(self.vad_sensitivity, 0), 3))
+            except Exception as e:
+                print(f"Error initializing VAD: {e}")
+                self.vad = None
 
     def update_setting(self, key: str, value: Any) -> None:
         """Update a setting and save to config."""
@@ -430,7 +626,7 @@ class SpeechToTextApp:
         elif key == 'vad_sensitivity':
             self.vad = webrtcvad.Vad(value)
         elif key == 'sample_rate':
-            self.chunk_size = int(value * 0.03)
+            self.chunk_size = int(value * self.chunk_duration)
             # Restart audio thread with new sample rate
             if self.audio_thread:
                 self.running = False
@@ -485,113 +681,71 @@ class SpeechToTextApp:
         if self.audio_buffer:
             self.process_audio_buffer()
             self.audio_buffer = bytearray()
+        
+        # Reset wake word detection
+        self.wake_word_detected = False
 
     # ------------------------------
     def audio_loop(self) -> None:
-        """Main audio processing loop."""
-        if not self.has_mic_access:
+        """Process audio input in a loop."""
+        if not self.has_mic_access or not self.vad:
+            print("Cannot start audio loop - missing microphone access or VAD")
             return
 
-        stream = self.p.open(
-            format=self.audio_format,
-            channels=self.channels,
-            rate=16000,
-            input=True,
-            frames_per_buffer=self.chunk_size
-        )
-        
-        # Initialize speech detection state
-        silent_chunks = 0
-        speech_chunks = 0
-        recording_duration = 0.0
-        silence_duration = 0.0
-        chunk_duration = self.chunk_size / 16000
+        try:
+            stream = self.p.open(
+                format=self.audio_format,
+                channels=self.channels,
+                rate=self.sample_rate,
+                input=True,
+                frames_per_buffer=self.chunk_size
+            )
+        except Exception as e:
+            print(f"Error opening audio stream: {e}")
+            return
 
         while self.running:
             try:
-                data = stream.read(
-                    self.chunk_size, exception_on_overflow=False
-                )
+                data = stream.read(self.chunk_size)
+                if not data:
+                    continue
+
+                # Add audio data to wake word detection queue
+                self.audio_buffer_ww.put(data)
+
+                # Only process for speech if recording or auto-detect is on
+                if self.is_recording or self.auto_detect_speech:
+                    # Check for speech
+                    try:
+                        is_speech = self.vad.is_speech(
+                            data,
+                            sample_rate=self.sample_rate
+                        )
+                    except Exception as e:
+                        print(f"VAD error: {e}")
+                        continue
+
+                    if is_speech:
+                        self.audio_buffer.extend(data)
+                    elif len(self.audio_buffer) > 0:
+                        # Process the buffer if we have enough audio
+                        if len(self.audio_buffer) >= self.min_audio_length * self.sample_rate:
+                            self.process_audio()
+                        self.audio_buffer = bytearray()
+                        
+                        # Reset wake word detection after processing
+                        if self.wake_word_detected:
+                            self.wake_word_detected = False
+
             except Exception as e:
-                print("Audio stream error:", e)
-                self.update_status('Error')
-                continue
+                print(f"Error in audio loop: {e}")
+                time.sleep(0.1)
 
-            # Apply noise reduction if enabled
-            if self.noise_reduce_threshold > 0:
-                data = noise_reduction(
-                    data, 
-                    16000,
-                    threshold=self.noise_reduce_threshold
-                )
-
-            # Determine if the chunk contains speech
-            is_speech = self.vad.is_speech(data, 16000)
-
-            # Update speech/silence tracking
-            if is_speech:
-                speech_chunks += 1
-                silence_duration = 0.0
-            else:
-                silence_duration += chunk_duration
-
-            # Start recording if:
-            # 1. Manual recording is active, or
-            # 2. Auto-detect is on and we have enough speech chunks
-            should_start = (
-                self.is_recording or 
-                (self.auto_detect_speech and 
-                 speech_chunks >= self.speech_start_chunks)
-            )
-
-            if should_start:
-                if not self.is_recording:  # Auto-detection just started
-                    print("Speech detected, starting recording...")
-                    self.update_status('Recording')
-                self.audio_buffer.extend(data)
-                recording_duration += chunk_duration
-                silent_chunks = 0 if is_speech else silent_chunks + 1
-            else:
-                speech_chunks = max(0, speech_chunks - 1)  # Decay speech chunks
-
-            # Check if we should stop recording
-            if self.audio_buffer:
-                # Stop conditions:
-                # 1. Too much silence
-                # 2. Maximum silence duration reached
-                # 3. Minimum speech duration met and silence detected
-                should_stop = (
-                    silent_chunks > self.silence_threshold or
-                    silence_duration >= self.max_silence_duration or
-                    (recording_duration >= self.min_speech_duration and
-                     silence_duration > 0.3)  # Small silence buffer
-                )
-
-                if should_stop:
-                    # Only process if we meet minimum duration
-                    if recording_duration >= self.min_audio_length:
-                        print(f"Processing audio segment ({recording_duration:.1f}s)")
-                        self.update_status('Computing')
-                        self.process_audio_buffer()
-                        self.update_status('Ready')
-                    else:
-                        print(f"Discarding short audio segment ({recording_duration:.1f}s)")
-
-                    # Reset state
-                    self.audio_buffer = bytearray()
-                    recording_duration = 0.0
-                    silence_duration = 0.0
-                    speech_chunks = 0
-                    silent_chunks = 0
-                    
-                    if self.is_recording:  # Was manual recording
-                        self.is_recording = False
-                        self.update_status('Ready')
-
-            time.sleep(0.01)  # Small sleep to prevent CPU overuse
-            
-        stream.stop_stream()
-        stream.close()
+        try:
+            stream.stop_stream()
+            stream.close()
+        except Exception as e:
+            print(f"Error closing audio stream: {e}")
 
     # ------------------------------
     def process_audio_buffer(self) -> None:
@@ -673,8 +827,30 @@ class SpeechToTextApp:
                     no_speech_threshold=0.6
                 )
                 
-                # Join all segment texts
-                text = " ".join([seg.text for seg in segments]).strip()
+                # Join all segment texts and handle encoding
+                try:
+                    # First try to normalize the text
+                    text = " ".join([
+                        unicodedata.normalize('NFKC', seg.text.strip())
+                        for seg in segments
+                    ])
+                    # Then encode and decode with error handling
+                    text = text.encode('utf-8', 'ignore').decode('utf-8')
+                except Exception as e:
+                    print(f"Warning: Text encoding issue: {e}")
+                    # Fallback to a more aggressive normalization
+                    try:
+                        text = " ".join([
+                            unicodedata.normalize('NFKD', seg.text.strip())
+                            .encode('ascii', 'ignore')
+                            .decode('ascii')
+                            for seg in segments
+                        ])
+                    except Exception as e:
+                        print(f"Error: Failed to normalize text: {e}")
+                        return ""
+                
+                text = text.strip()
                 
                 # Add basic punctuation if enabled
                 if text and self.add_punctuation and not text[-1] in '.!?':
@@ -705,6 +881,181 @@ class SpeechToTextApp:
             print(f"Transcription error: {e}")
             self.update_status('Error')
             return ""
+
+    def _on_vad_level_change(self, action: Gio.SimpleAction, parameter: None) -> None:
+        """Handle VAD sensitivity level change."""
+        level = int(action.get_name().replace('vad_level_', ''))
+        self.vad_sensitivity = level
+        
+        if self.vad:
+            try:
+                self.vad.set_mode(min(max(level, 0), 3))
+            except Exception as e:
+                print(f"Error setting VAD mode: {e}")
+        
+        print_status_line(
+            "Settings",
+            details=f"VAD sensitivity changed to {level}"
+        )
+        
+        # Update action state
+        action.set_state(GLib.Variant.new_boolean(True))
+        
+        # Set other VAD level actions to false
+        for act in self.app.list_actions():
+            if act.startswith('vad_level_') and act != action.get_name():
+                self.app.lookup_action(act).set_state(
+                    GLib.Variant.new_boolean(False)
+                )
+
+    def _on_speech_start_change(self, action: Gio.SimpleAction, parameter: None) -> None:
+        """Handle speech start threshold change."""
+        chunks = int(action.get_name().replace('speech_start_', ''))
+        self.speech_start_chunks = chunks
+        
+        print_status_line(
+            "Settings",
+            details=f"Speech start threshold: {chunks} chunks"
+        )
+        
+        # Update action state
+        action.set_state(GLib.Variant.new_boolean(True))
+        
+        # Set other speech start actions to false
+        for act in self.app.list_actions():
+            if act.startswith('speech_start_') and act != action.get_name():
+                self.app.lookup_action(act).set_state(
+                    GLib.Variant.new_boolean(False)
+                )
+
+    def _on_silence_threshold_change(self, action: Gio.SimpleAction, parameter: None) -> None:
+        """Handle silence threshold change."""
+        threshold = int(action.get_name().replace('silence_threshold_', ''))
+        self.silence_threshold = threshold
+        
+        print_status_line(
+            "Settings",
+            details=f"Silence threshold: {threshold} chunks"
+        )
+        
+        # Update action state
+        action.set_state(GLib.Variant.new_boolean(True))
+        
+        # Set other silence threshold actions to false
+        for act in self.app.list_actions():
+            if act.startswith('silence_threshold_') and act != action.get_name():
+                self.app.lookup_action(act).set_state(
+                    GLib.Variant.new_boolean(False)
+                )
+
+    def _on_duration_change(self, action: Gio.SimpleAction, parameter: None) -> None:
+        """Handle duration setting changes."""
+        name = action.get_name()
+        value = float(name.split('_')[-1].replace('_', '.'))
+        setting = 'Unknown setting'  # Default value to prevent unassigned variable
+        
+        if name.startswith('min_speech_'):
+            self.min_speech_duration = value
+            setting = 'Min speech duration'
+        elif name.startswith('max_silence_'):
+            self.max_silence_duration = value
+            setting = 'Max silence duration'
+        elif name.startswith('min_audio_'):
+            self.min_audio_length = value
+            setting = 'Min audio length'
+        
+        print_status_line(
+            "Settings",
+            details=f"{setting} changed to {value}s"
+        )
+        
+        # Update action state
+        action.set_state(GLib.Variant.new_boolean(True))
+        
+        # Set other actions in the same group to false
+        prefix = name[:name.rindex('_')]
+        for act in self.app.list_actions():
+            if act.startswith(prefix) and act != name:
+                self.app.lookup_action(act).set_state(
+                    GLib.Variant.new_boolean(False)
+                )
+
+    def _on_right_click(
+        self,
+        gesture: Gtk.GestureClick,
+        n_press: int,
+        x: float,
+        y: float,
+        popover: Gtk.PopoverMenu
+    ) -> None:
+        """Handle right-click to show menu."""
+        popover.set_pointing_to(Gdk.Rectangle(x=x, y=y, width=1, height=1))
+        popover.popup()
+
+    def _on_drag_begin(
+        self,
+        gesture: Gtk.GestureDrag,
+        start_x: float,
+        start_y: float
+    ) -> None:
+        """Start window dragging."""
+        # Store the initial window position
+        self._drag_start_pos = self.window.get_position()
+
+    def _on_drag_update(
+        self,
+        gesture: Gtk.GestureDrag,
+        offset_x: float,
+        offset_y: float
+    ) -> None:
+        """Update window position during drag."""
+        if hasattr(self, '_drag_start_pos'):
+            start_x, start_y = self._drag_start_pos
+            self.window.move(
+                int(start_x + offset_x),
+                int(start_y + offset_y)
+            )
+
+    def _wake_word_loop(self) -> None:
+        """Process audio for wake word detection."""
+        while self.running:
+            try:
+                # Get audio data from the queue
+                audio_chunk = self.audio_buffer_ww.get(timeout=0.1)
+                
+                # Convert to float32 for wake word detection
+                audio_data = np.frombuffer(audio_chunk, dtype=np.int16)
+                audio_data = audio_data.astype(np.float32) / 32768.0
+                
+                # Get wake word predictions
+                predictions = self.wake_word_detector.predict(audio_data)
+                
+                # Check for wake word activation
+                for prediction in predictions:
+                    if prediction[1] > 0.5:  # Confidence threshold
+                        if not self.wake_word_detected:
+                            print_status_line(
+                                "Wake Word",
+                                details="Detected 'Hey Computer'"
+                            )
+                            self.wake_word_detected = True
+                            self.start_recording()
+                
+            except queue.Empty:
+                continue
+            except Exception as e:
+                print(f"Wake word detection error: {e}")
+                time.sleep(0.1)
+
+    def _on_wake_word_toggle(self, action: Gio.SimpleAction, parameter: None) -> None:
+        """Handle wake word detection toggle."""
+        state = not action.get_state()
+        action.set_state(GLib.Variant.new_boolean(state))
+        self.wake_word_detected = state
+        print_status_line(
+            "Settings",
+            details=f"Wake word detection {'enabled' if state else 'disabled'}"
+        )
 
 
 # ------------------------------

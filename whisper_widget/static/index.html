@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Whisper Widget Visualization</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: transparent;
+            overflow: hidden;
+        }
+
+        #waveform {
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="waveform"></div>
+    <script src="https://unpkg.com/siriwave/dist/siriwave.umd.min.js"></script>
+    <script>
+        let currentState = 'idle';
+        let pulseInterval = null;
+
+        const siriWave = new SiriWave({
+            container: document.getElementById('waveform'),
+            width: window.innerWidth,
+            height: window.innerHeight,
+            style: 'ios9',
+            curveDefinition: [
+                {
+                    color: "255, 255, 255",
+                    supportLine: true,
+                },
+                {
+                    color: "15, 82, 169",    // Blue
+                    phase: 0,
+                },
+                {
+                    color: "173, 57, 76",    // Red
+                    phase: 80,
+                },
+                {
+                    color: "48, 220, 155",   // Green
+                    phase: 160,
+                }
+            ],
+            ratio: 1,
+            speed: 0.2,
+            amplitude: 1,
+            frequency: 6,
+            cover: true,
+            autostart: true,
+            pixelDepth: 0.02,
+            lerpSpeed: 0.1,
+        });
+
+        // Function to update wave amplitude with easing
+        function updateAmplitude(value, duration = 500) {
+            const startAmp = siriWave.amplitude;
+            const startTime = Date.now();
+
+            function ease(t) {
+                return t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+            }
+
+            function animate() {
+                const elapsed = Date.now() - startTime;
+                const progress = Math.min(elapsed / duration, 1);
+
+                const currentAmp = startAmp + (value - startAmp) * ease(progress);
+                siriWave.setAmplitude(currentAmp);
+
+                if (progress < 1) {
+                    requestAnimationFrame(animate);
+                }
+            }
+
+            animate();
+        }
+
+        // Function to update wave speed with easing
+        function updateSpeed(value, duration = 500) {
+            const startSpeed = siriWave.speed;
+            const startTime = Date.now();
+
+            function ease(t) {
+                return t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+            }
+
+            function animate() {
+                const elapsed = Date.now() - startTime;
+                const progress = Math.min(elapsed / duration, 1);
+
+                const currentSpeed = startSpeed + (value - startSpeed) * ease(progress);
+                siriWave.setSpeed(currentSpeed);
+
+                if (progress < 1) {
+                    requestAnimationFrame(animate);
+                }
+            }
+
+            animate();
+        }
+
+        // Function to create a pulsing effect
+        function startPulse(minAmp, maxAmp, duration) {
+            if (pulseInterval) {
+                clearInterval(pulseInterval);
+            }
+
+            let increasing = true;
+            pulseInterval = setInterval(() => {
+                if (currentState !== 'thinking') {
+                    clearInterval(pulseInterval);
+                    return;
+                }
+
+                if (increasing) {
+                    updateAmplitude(maxAmp, duration);
+                } else {
+                    updateAmplitude(minAmp, duration);
+                }
+                increasing = !increasing;
+            }, duration);
+        }
+
+        // Listen for messages from the app
+        window.addEventListener('message', function (event) {
+            const data = event.data;
+            currentState = data.type === 'state' ? data.value : currentState;
+
+            if (data.type === 'amplitude') {
+                updateAmplitude(data.value);
+            } else if (data.type === 'speed') {
+                updateSpeed(data.value);
+            } else if (data.type === 'state') {
+                switch (data.value) {
+                    case 'recording':
+                        // Active recording state: high amplitude, faster speed
+                        updateAmplitude(1, 300);
+                        updateSpeed(0.3, 300);
+                        if (pulseInterval) {
+                            clearInterval(pulseInterval);
+                        }
+                        break;
+
+                    case 'thinking':
+                        // Thinking state: pulsing wave
+                        updateSpeed(0.15, 500);
+                        startPulse(0.3, 0.7, 1000);
+                        break;
+
+                    case 'idle':
+                        // Idle state: gentle, slow movement
+                        updateAmplitude(0.15, 800);
+                        updateSpeed(0.05, 800);
+                        if (pulseInterval) {
+                            clearInterval(pulseInterval);
+                        }
+                        break;
+
+                    case 'wake_word_detected':
+                        // Wake word detected state: distinct color change
+                        updateAmplitude(0.5, 300);
+                        updateSpeed(0.2, 300);
+                        siriWave.setOptions({
+                            curveDefinition: [
+                                {
+                                    color: "255, 215, 0", // Gold
+                                    supportLine: true,
+                                },
+                                {
+                                    color: "255, 223, 0", // Bright Yellow
+                                    phase: 0,
+                                }
+                            ]
+                        });
+                        if (pulseInterval) {
+                            clearInterval(pulseInterval);
+                        }
+                        break;
+                }
+            }
+        });
+
+        // Handle window resize
+        window.addEventListener('resize', function () {
+            siriWave.width = window.innerWidth;
+            siriWave.height = window.innerHeight;
+            siriWave.resize();
+        });
+
+        // Initial state
+        updateAmplitude(0.15, 0);
+        updateSpeed(0.05, 0);
+    </script>
+</body>
+
+</html>

@@ -1,7 +1,9 @@
+import gi
+gi.require_version('Gtk', '4.0')
 import pytest
 from unittest.mock import MagicMock, patch
-from whisper_widget.app import SpeechToTextApp
 from gi.repository import Gtk, GLib
+from whisper_widget.app import SpeechToTextApp
 
 
 @pytest.fixture

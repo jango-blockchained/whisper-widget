@@ -23,7 +23,8 @@ with open(os.devnull, 'w') as devnull:
 def main():
     # Initialize the app with default settings
     app = SpeechToTextApp(
-        transcription_mode="continuous",
+        transcription_mode="local",
+        output_mode="continuous",
         model_size="base",
         language="en",
         vad_sensitivity=3,

@@ -1,4 +1,8 @@
 pytest>=7.0.0
-pytest-cov>=4.0.0
 pytest-mock>=3.10.0
-numpy>=1.24.0 
+pytest-cov>=4.0.0
+pytest-mypy>=0.10.0
+numpy>=1.24.0
+openwakeword>=0.4.0
+mypy>=1.8.0
+types-setuptools>=69.0.0 
