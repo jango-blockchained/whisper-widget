@@ -4,6 +4,7 @@ A Linux system tray widget for real-time speech-to-text transcription using eith
 
 ## Features
 
+- Modern GTK 4 user interface
 - System tray icon for easy control
 - Voice Activity Detection (VAD) for automatic speech detection
 - Optional noise reduction
@@ -15,6 +16,7 @@ A Linux system tray widget for real-time speech-to-text transcription using eith
 
 - Python 3.8+
 - Linux system with audio input
+- GTK 4.0+ and GObject Introspection
 - PortAudio development files (for PyAudio)
 
 ## Installation
@@ -22,10 +24,10 @@ A Linux system tray widget for real-time speech-to-text transcription using eith
 1. Install system dependencies:
 ```bash
 # For Ubuntu/Debian:
-sudo apt-get install python3-dev portaudio19-dev python3-venv
+sudo apt-get install python3-dev portaudio19-dev python3-venv libgtk-4-dev gobject-introspection
 
 # For Fedora:
-sudo dnf install python3-devel portaudio-devel python3-virtualenv
+sudo dnf install python3-devel portaudio-devel python3-virtualenv gtk4-devel gobject-introspection-devel
 ```
 
 2. Create and activate a virtual environment:
@@ -43,7 +45,7 @@ pip install -r requirements.txt
 
 1. Run the application:
 ```bash
-python whisper_widget.py
+python run_app.py
 ```
 
 2. The application will appear in your system tray

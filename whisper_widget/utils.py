@@ -20,7 +20,7 @@ def noise_reduction(
         Processed audio data bytes
     """
     # Convert bytes to numpy array
-    audio_array = np.frombuffer(audio_data, dtype=np.int16)
+    audio_array = np.frombuffer(audio_data, dtype=np.int16).copy()
     
     # Calculate maximum amplitude
     max_amplitude = np.max(np.abs(audio_array))

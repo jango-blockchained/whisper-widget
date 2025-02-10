@@ -1,35 +1,30 @@
 import pytest
 from unittest.mock import MagicMock, patch
 from whisper_widget.app import SpeechToTextApp
-from gi.repository import Gtk
+from gi.repository import Gtk, GLib
 
 
 @pytest.fixture
 def mock_gtk():
-    """Mock GTK and AppIndicator3."""
+    """Mock GTK and related components."""
     with patch('gi.repository.Gtk') as mock_gtk, \
-         patch('gi.repository.AppIndicator3') as mock_indicator:
-        # Create mock menu items
+         patch('gi.repository.Gio') as mock_gio:
+        
+        # Create mock application
+        mock_app = MagicMock()
+        mock_gtk.Application.new.return_value = mock_app
+        
+        # Create mock menu
         mock_menu = MagicMock()
-        mock_menu_item = MagicMock()
-        mock_submenu = MagicMock()
+        mock_gio.Menu.new.return_value = mock_menu
         
-        # Set up menu hierarchy
-        mock_menu_item.get_submenu.return_value = mock_submenu
-        mock_menu.get_children.return_value = [mock_menu_item]
-        mock_menu.get_parent.return_value = mock_gtk
+        # Create mock status icon
+        mock_status_icon = MagicMock()
+        mock_gtk.StatusIcon.new_from_icon_name.return_value = mock_status_icon
         
-        # Set up GTK mocks
-        mock_gtk.Menu.return_value = mock_menu
-        mock_gtk.MenuItem = MagicMock
-        mock_gtk.RadioMenuItem = MagicMock
-        mock_gtk.CheckMenuItem = MagicMock
-        mock_gtk.SeparatorMenuItem = MagicMock
-        
-        # Set up AppIndicator mocks
-        mock_indicator.Indicator.new.return_value = MagicMock()
-        mock_indicator.IndicatorCategory = MagicMock()
-        mock_indicator.IndicatorStatus = MagicMock()
+        # Create mock popover
+        mock_popover = MagicMock()
+        mock_gtk.PopoverMenu.new_from_model.return_value = mock_popover
         
         yield mock_gtk
 
@@ -37,9 +32,14 @@ def mock_gtk():
 @pytest.fixture
 def mock_app(mock_gtk, temp_config_dir):
     """Create a mock app with mocked UI components."""
-    with patch('app.check_microphone_access', return_value=True), \
-         patch('app.WhisperModel') as mock_model, \
-         patch('app.webrtcvad.Vad') as mock_vad:
+    with patch(
+        'whisper_widget.app.check_microphone_access',
+        return_value=True
+    ), patch(
+        'whisper_widget.app.WhisperModel'
+    ) as mock_model, patch(
+        'whisper_widget.app.webrtcvad.Vad'
+    ) as mock_vad:
         
         # Set up mock model
         mock_model_instance = MagicMock()
@@ -55,9 +55,99 @@ def mock_app(mock_gtk, temp_config_dir):
         # Replace real components with mocks
         app.model = mock_model_instance
         app.vad = mock_vad_instance
-        app.indicator = MagicMock()
+        app.status_icon = MagicMock()
         
         return app
+
+
+def test_app_initialization(mock_app):
+    """Test app initialization."""
+    app = mock_app
+    
+    # Check that components are initialized
+    assert app.model is not None
+    assert app.vad is not None
+    assert app.status_icon is not None
+    assert app.menu is not None
+    
+    # Check default settings
+    assert app.transcription_mode in ['continuous', 'clipboard']
+    assert app.model_size in ['tiny', 'base', 'small', 'medium', 'large']
+    assert app.language in ['en', 'es', 'fr', 'de', 'zh', 'ja', 'ru']
+    assert 1 <= app.vad_sensitivity <= 3
+
+
+def test_menu_actions(mock_app):
+    """Test menu action handling."""
+    app = mock_app
+    
+    # Test mode change
+    mode_action = app.app.lookup_action('set-mode')
+    mode_action.activate(GLib.Variant.new_string('local'))
+    assert app.settings['transcription_mode'] == 'local'
+    
+    # Test model change
+    model_action = app.app.lookup_action('set-model')
+    model_action.activate(GLib.Variant.new_string('small'))
+    assert app.settings['model_size'] == 'small'
+    
+    # Test language change
+    lang_action = app.app.lookup_action('set-language')
+    lang_action.activate(GLib.Variant.new_string('fr'))
+    assert app.settings['language'] == 'fr'
+    
+    # Test auto-detect toggle
+    auto_detect = app.app.lookup_action('toggle-auto-detect')
+    auto_detect.activate(None)
+    assert app.settings['auto_detect_speech'] == (
+        not mock_app.auto_detect_speech
+    )
+    
+    # Test punctuation toggle
+    add_punct = app.app.lookup_action('toggle-punctuation')
+    add_punct.activate(None)
+    assert app.settings['add_punctuation'] == (
+        not mock_app.add_punctuation
+    )
+
+
+def test_icon_activation(mock_app):
+    """Test status icon activation."""
+    app = mock_app
+    
+    # Test start recording
+    app.recording = False
+    app.on_icon_activate(app.status_icon)
+    assert app.recording is True
+    
+    # Test stop recording
+    app.recording = True
+    app.on_icon_activate(app.status_icon)
+    assert app.recording is False
+
+
+def test_icon_popup(mock_app):
+    """Test status icon popup menu."""
+    app = mock_app
+    
+    # Test popup menu
+    app.on_icon_popup(app.status_icon, 3, 0)
+    
+    # Verify popover was created and shown
+    Gtk.PopoverMenu.new_from_model.assert_called_with(app.menu)
+    Gtk.PopoverMenu.new_from_model.return_value.popup.assert_called_once()
+
+
+def test_quit(mock_app):
+    """Test quit functionality."""
+    app = mock_app
+    
+    # Test quit action
+    quit_action = app.app.lookup_action('quit')
+    quit_action.activate(None)
+    
+    assert app.running is False
+    app.app.quit.assert_called_once()
 
 
 def test_create_menu(mock_app):
@@ -75,7 +165,7 @@ def test_update_icon_state(mock_app):
     
     for state in states:
         mock_app.update_icon_state(state)
-        mock_app.indicator.set_icon.assert_called()
+        mock_app.status_icon.set_icon.assert_called()
 
 
 def test_transcription_mode_setting(mock_app):
@@ -99,7 +189,7 @@ def test_model_size_setting(mock_app):
     mock_model.return_value = mock_model_instance
     
     # Replace the WhisperModel class
-    with patch('app.WhisperModel', mock_model):
+    with patch('whisper_widget.app.WhisperModel', mock_model):
         # Update the setting and create new model
         mock_app.update_setting('model_size', 'small')
         
@@ -127,7 +217,7 @@ def test_vad_sensitivity_setting(mock_app):
     mock_vad.return_value = mock_vad_instance
     
     # Replace the Vad class
-    with patch('app.webrtcvad.Vad', mock_vad):
+    with patch('whisper_widget.app.webrtcvad.Vad', mock_vad):
         # Update the setting and create new VAD
         mock_app.update_setting('vad_sensitivity', 2)
         
@@ -145,84 +235,30 @@ def test_vad_sensitivity_setting(mock_app):
         mock_vad.assert_called_with(2)
 
 
-def test_quit(mock_app):
-    """Test quit functionality."""
-    with patch('gi.repository.Gtk.main_quit') as mock_quit:
-        mock_app.quit(None)
-        assert mock_app.running is False
-        mock_quit.assert_called_once()
-
-
-def test_menu_items(mock_app):
-    """Test menu item creation and callbacks."""
-    # Test settings menu
-    settings_menu = mock_app.menu.get_children()[0].get_submenu()
-    assert settings_menu is not None
-    
-    # Test transcription mode menu
-    mode_menu = settings_menu.get_children()[0].get_submenu()
-    assert mode_menu is not None
-    
-    # Test model size menu
-    model_menu = settings_menu.get_children()[1].get_submenu()
-    assert model_menu is not None
-    
-    # Test language menu
-    lang_menu = settings_menu.get_children()[2].get_submenu()
-    assert lang_menu is not None
-    
-    # Test VAD sensitivity menu
-    vad_menu = settings_menu.get_children()[3].get_submenu()
-    assert vad_menu is not None
-
-
-def test_toggle_options(mock_app):
-    """Test toggle option menu items."""
-    settings_menu = mock_app.menu.get_children()[0].get_submenu()
-
-    # Test auto-detect speech toggle
-    auto_detect = settings_menu.get_children()[5]  # CheckMenuItem
-    assert isinstance(auto_detect, Gtk.CheckMenuItem)
-    assert auto_detect.get_active() == mock_app.auto_detect_speech
-
-    # Test add punctuation toggle
-    add_punct = settings_menu.get_children()[6]  # CheckMenuItem
-    assert isinstance(add_punct, Gtk.CheckMenuItem)
-    assert add_punct.get_active() == mock_app.add_punctuation
-
-    # Test menu item activation
-    auto_detect.set_active(not mock_app.auto_detect_speech)
-    assert mock_app.settings['auto_detect_speech'] == (not mock_app.auto_detect_speech)
-
-    add_punct.set_active(not mock_app.add_punctuation)
-    assert mock_app.settings['add_punctuation'] == (not mock_app.add_punctuation)
-
-
 def test_speech_detection_menu(mock_app):
     """Test speech detection settings menu items."""
     app = mock_app
-    settings_menu = app.menu.get_children()[0].get_submenu()
-    speech_menu = settings_menu.get_children()[3].get_submenu()  # Speech Detection menu
-
+    menu = app.menu.get_section(0)
+    
     # Test min speech duration menu
-    min_speech_menu = speech_menu.get_children()[0].get_submenu()
-    assert min_speech_menu is not None
-    assert len(min_speech_menu.get_children()) == 5  # [0.3, 0.5, 1.0, 1.5, 2.0]
+    min_speech = menu.get_item_link(3, 'submenu')
+    assert min_speech is not None
+    assert min_speech.get_n_items() == 5  # [0.3, 0.5, 1.0, 1.5, 2.0]
 
     # Test max silence duration menu
-    max_silence_menu = speech_menu.get_children()[1].get_submenu()
-    assert max_silence_menu is not None
-    assert len(max_silence_menu.get_children()) == 5  # [0.5, 1.0, 1.5, 2.0, 3.0]
+    max_silence = menu.get_item_link(4, 'submenu')
+    assert max_silence is not None
+    assert max_silence.get_n_items() == 5  # [0.5, 1.0, 1.5, 2.0, 3.0]
 
     # Test speech start chunks menu
-    chunks_menu = speech_menu.get_children()[2].get_submenu()
-    assert chunks_menu is not None
-    assert len(chunks_menu.get_children()) == 5  # [1, 2, 3, 4, 5]
+    chunks = menu.get_item_link(5, 'submenu')
+    assert chunks is not None
+    assert chunks.get_n_items() == 5  # [1, 2, 3, 4, 5]
 
     # Test noise reduction menu
-    noise_menu = speech_menu.get_children()[3].get_submenu()
-    assert noise_menu is not None
-    assert len(noise_menu.get_children()) == 6  # [0.0, 0.1, 0.2, 0.3, 0.4, 0.5]
+    noise = menu.get_item_link(6, 'submenu')
+    assert noise is not None
+    assert noise.get_n_items() == 6  # [0.0, 0.1, 0.2, 0.3, 0.4, 0.5]
 
 
 def test_speech_detection_settings_update(mock_app):

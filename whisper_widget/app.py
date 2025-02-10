@@ -1,28 +1,27 @@
+"""Speech-to-text application using GTK 4 and Whisper."""
+
 from __future__ import annotations
 
-import json
 import os
 import threading
 import time
 import wave
-from pathlib import Path
-from typing import Any, Dict, Optional, Union, TypedDict
+from typing import Any, Optional, Union, TypedDict
 
-import gi
-gi.require_version('Keybinder', '3.0')
-gi.require_version('AppIndicator3', '0.1')
-gi.require_version('Gtk', '3.0')
+import gi  # type: ignore
+gi.require_version('Gtk', '4.0')
+from gi.repository import Gtk, Gio, GLib  # type: ignore # noqa: E402
 
-import openai
-import pyaudio
-import pyperclip
-import webrtcvad
-from faster_whisper import WhisperModel
-from pynput.keyboard import Key, KeyCode, Listener, Controller
-from gi.repository import AppIndicator3, Gtk
+import openai  # type: ignore # noqa: E402
+import pyaudio  # type: ignore # noqa: E402
+import pyperclip  # type: ignore # noqa: E402
+import webrtcvad  # type: ignore # noqa: E402
+from faster_whisper import WhisperModel  # type: ignore # noqa: E402
+from pynput.keyboard import (  # type: ignore # noqa: E402
+    Key, KeyCode, Listener, Controller
+)
 
-from whisper_widget.settings import load_settings, save_settings
-from whisper_widget.utils import noise_reduction
+from whisper_widget.utils import noise_reduction  # noqa: E402
 
 
 class OpenAIResponse(TypedDict):
@@ -44,95 +43,8 @@ def check_microphone_access() -> bool:
         return False
 
 
-# ------------------------------
-# Optional noise cancellation stub.
-# Replace or extend with a real algorithm or library (e.g., noisereduce)
-def noise_reduction(
-    audio_data: bytes,
-    sample_rate: int,
-    threshold: float = 0.1
-) -> bytes:
-    """
-    Apply noise reduction to the audio data.
-    
-    Args:
-        audio_data: Raw audio data bytes
-        sample_rate: Audio sample rate in Hz
-        threshold: Noise reduction sensitivity (0.0-1.0)
-        
-    Returns:
-        Processed audio data bytes
-    """
-    # For a basic implementation, we could:
-    # 1. Convert bytes to numpy array
-    # 2. Apply a simple noise gate
-    # 3. Convert back to bytes
-    # 
-    # Example with numpy:
-    # import numpy as np
-    # audio_array = np.frombuffer(audio_data, dtype=np.int16)
-    # max_amplitude = np.max(np.abs(audio_array))
-    # noise_gate = max_amplitude * threshold
-    # audio_array[np.abs(audio_array) < noise_gate] = 0
-    # return audio_array.tobytes()
-    
-    # For now, simply return the data unmodified
-    return audio_data
-
-
-def load_settings() -> Dict[str, Any]:
-    """Load settings from config file."""
-    config_dir = Path.home() / '.config' / 'whisper-widget'
-    config_file = config_dir / 'config.json'
-    default_settings: Dict[str, Any] = {
-        'transcription_mode': 'continuous',  # continuous or clipboard
-        'model_size': 'base',  # tiny, base, small, medium, large
-        'language': 'en',  # language code
-        'vad_sensitivity': 3,  # 1-3
-        'auto_detect_speech': True,
-        'add_punctuation': True,
-        'min_speech_duration': 0.5,  # seconds
-        'max_silence_duration': 1.0,  # seconds
-        'min_audio_length': 1.0,  # seconds
-        'speech_threshold': 0.5,  # 0.0-1.0
-        'silence_threshold': 10,  # silence threshold
-        'speech_start_chunks': 2,  # consecutive speech chunks to start
-        'noise_reduce_threshold': 0.1  # 0.0-1.0
-    }
-    
-    if config_file.exists():
-        try:
-            with open(config_file) as f:
-                return {**default_settings, **json.load(f)}
-        except Exception as e:
-            print(f"Error loading settings: {e}")
-            return default_settings
-    return default_settings
-
-
-def save_settings(settings: Dict[str, Any]) -> None:
-    """Save settings to config file."""
-    config_dir = Path.home() / '.config' / 'whisper-widget'
-    config_file = config_dir / 'config.json'
-    config_dir.mkdir(parents=True, exist_ok=True)
-    
-    try:
-        with open(config_file, 'w') as f:
-            json.dump(settings, f, indent=4)
-    except Exception as e:
-        print(f"Error saving settings: {e}")
-
-
-# ------------------------------
 class SpeechToTextApp:
-    # Icon colors for different states
-    ICON_COLORS = {
-        'ready': (0, 128, 0),        # Green
-        'recording': (255, 0, 0),     # Red
-        'computing': (255, 165, 0),   # Orange
-        'error': (128, 0, 0),         # Dark red
-        'no_mic': (128, 128, 128)     # Gray - no microphone access
-    }
+    """Main application class for the speech-to-text widget."""
 
     def __init__(
         self,
@@ -145,20 +57,30 @@ class SpeechToTextApp:
         openai_api_key: Optional[str] = None,
     ) -> None:
         """Initialize the application."""
+        # Create application
+        self.app = Gtk.Application.new(
+            "com.github.whisper-widget",
+            Gio.ApplicationFlags.FLAGS_NONE
+        )
+        self.app.connect("activate", self.on_activate)
+
+        # Initialize settings
         self.settings = {
-            'transcription_mode': 'continuous',  # continuous or clipboard
-            'model_size': 'base',  # tiny, base, small, medium, large
-            'language': 'en',  # language code
-            'vad_sensitivity': 3,  # 1-3
-            'auto_detect_speech': True,
-            'add_punctuation': True,
+            'transcription_mode': transcription_mode,
+            'model_size': model_size,
+            'language': language,
+            'vad_sensitivity': vad_sensitivity,
+            'auto_detect_speech': auto_detect_speech,
+            'add_punctuation': add_punctuation,
             'min_speech_duration': 0.5,  # seconds
             'max_silence_duration': 1.0,  # seconds
             'min_audio_length': 1.0,  # seconds
             'speech_threshold': 0.5,  # 0.0-1.0
             'silence_threshold': 10,  # silence threshold
-            'speech_start_chunks': 2,  # consecutive speech chunks to start
-            'noise_reduce_threshold': 0.1  # 0.0-1.0
+            'speech_start_chunks': 2,  # consecutive chunks to start
+            'noise_reduce_threshold': 0.1,  # 0.0-1.0
+            'openai_api_key': openai_api_key,
+            'sample_rate': 16000,  # Fixed for Whisper
         }
         
         # Store instance attributes for compatibility with tests
@@ -168,21 +90,6 @@ class SpeechToTextApp:
         self.vad_sensitivity = vad_sensitivity
         self.auto_detect_speech = auto_detect_speech
         self.add_punctuation = add_punctuation
-        
-        # Update settings with constructor parameters
-        self.settings.update({
-            'transcription_mode': transcription_mode,
-            'model_size': model_size,
-            'language': language,
-            'vad_sensitivity': vad_sensitivity,
-            'auto_detect_speech': auto_detect_speech,
-            'add_punctuation': add_punctuation,
-            'openai_api_key': openai_api_key,
-            'sample_rate': 16000,  # Fixed for Whisper
-        })
-        
-        # Save updated settings
-        save_settings(self.settings)
 
         # Initialize Whisper model
         try:
@@ -199,19 +106,6 @@ class SpeechToTextApp:
         if self.settings['openai_api_key']:
             openai.api_key = self.settings['openai_api_key']
 
-        # Create menu
-        self.menu = Gtk.Menu()
-        self._create_menu()  # Call private method to create menu items
-        
-        # Initialize system tray icon
-        self.indicator = AppIndicator3.Indicator.new(
-            "speech-to-text",
-            "audio-input-microphone",
-            AppIndicator3.IndicatorCategory.APPLICATION_STATUS
-        )
-        self.indicator.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
-        self.indicator.set_menu(self.menu)
-
         # Initialize audio components
         self.init_audio()
 
@@ -220,79 +114,61 @@ class SpeechToTextApp:
         self.listener = Listener(on_press=self.on_key_press)
         self.listener.start()
 
-    def _create_menu(self) -> None:
-        """Create the menu items for the system tray icon."""
-        # Create main menu
-        self.menu = Gtk.Menu()
+    def on_activate(self, app: Gtk.Application) -> None:
+        """Called when the application is activated."""
+        # Create window
+        self.window = Gtk.ApplicationWindow.new(app)
+        self.window.set_title("Speech to Text")
+        self.window.set_default_size(300, 100)
 
-        # Settings submenu
-        settings_item = Gtk.MenuItem(label="Settings")
-        settings_menu = Gtk.Menu()
-        settings_item.set_submenu(settings_menu)
+        # Create header bar
+        header = Gtk.HeaderBar()
+        self.window.set_titlebar(header)
 
-        # 1. Transcription mode menu
-        mode_item = Gtk.MenuItem(label="Transcription Mode")
-        mode_menu = Gtk.Menu()
-        mode_item.set_submenu(mode_menu)
+        # Create menu button
+        menu_button = Gtk.MenuButton()
+        header.pack_end(menu_button)
 
-        # Local mode
-        local_mode = Gtk.RadioMenuItem(label="Local")
-        local_mode.connect(
-            'activate',
-            lambda w: (
-                self.update_setting('transcription_mode', 'local')
-                if w.get_active() else None
-            )
-        )
-        local_mode.set_active(self.transcription_mode == 'local')
-        mode_menu.append(local_mode)
+        # Create menu
+        menu = Gio.Menu.new()
+        self._create_menu(menu)
+        menu_button.set_menu_model(menu)
 
-        # OpenAI mode
-        openai_mode = Gtk.RadioMenuItem.new_with_label_from_widget(local_mode, "OpenAI")
-        openai_mode.connect(
-            'activate',
-            lambda w: (
-                self.update_setting('transcription_mode', 'openai')
-                if w.get_active() else None
-            )
-        )
-        openai_mode.set_active(self.transcription_mode == 'openai')
-        mode_menu.append(openai_mode)
+        # Create main box
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self.window.set_child(box)
 
-        settings_menu.append(mode_item)
+        # Create status label
+        self.status_label = Gtk.Label(label="Ready")
+        box.append(self.status_label)
 
-        # 2. Model size menu
-        model_item = Gtk.MenuItem(label="Model Size")
-        model_menu = Gtk.Menu()
-        model_item.set_submenu(model_menu)
+        # Create record button
+        record_button = Gtk.Button(label="Record (F9)")
+        record_button.connect("clicked", self._on_record_clicked)
+        box.append(record_button)
 
-        model_sizes = ['tiny', 'base', 'small', 'medium', 'large']
-        model_group = None
-        for size in model_sizes:
-            if model_group is None:
-                model_radio = Gtk.RadioMenuItem(label=size)
-                model_group = model_radio
-            else:
-                model_radio = Gtk.RadioMenuItem.new_with_label_from_widget(
-                    model_group, size
-                )
-            model_radio.connect(
-                'activate',
-                lambda w, s=size: (
-                    self.update_setting('model_size', s)
-                    if w.get_active() else None
-                )
-            )
-            model_radio.set_active(self.model_size == size)
-            model_menu.append(model_radio)
+        # Show window
+        self.window.present()
 
-        settings_menu.append(model_item)
+    def _create_menu(self, menu: Gio.Menu) -> None:
+        """Create the application menu."""
+        # Settings section
+        settings = Gio.Menu.new()
+        
+        # Transcription mode submenu
+        mode_menu = Gio.Menu.new()
+        mode_menu.append("Local", "app.set-mode::local")
+        mode_menu.append("OpenAI", "app.set-mode::openai")
+        settings.append_submenu("Transcription Mode", mode_menu)
 
-        # 3. Language menu
-        lang_item = Gtk.MenuItem(label="Language")
-        lang_menu = Gtk.Menu()
-        lang_item.set_submenu(lang_menu)
+        # Model size submenu
+        model_menu = Gio.Menu.new()
+        for size in ['tiny', 'base', 'small', 'medium', 'large']:
+            model_menu.append(size.capitalize(), f"app.set-model::{size}")
+        settings.append_submenu("Model Size", model_menu)
 
+        # Language submenu
+        lang_menu = Gio.Menu.new()
         languages = [
             ('English', 'en'),
             ('Spanish', 'es'),
@@ -303,200 +179,113 @@ class SpeechToTextApp:
             ('Chinese', 'zh'),
             ('Auto', 'auto')
         ]
-        lang_group = None
-        for lang_name, lang_code in languages:
-            if lang_group is None:
-                lang_radio = Gtk.RadioMenuItem(label=lang_name)
-                lang_group = lang_radio
-            else:
-                lang_radio = Gtk.RadioMenuItem.new_with_label_from_widget(
-                    lang_group, lang_name
-                )
-            lang_radio.connect(
-                'activate',
-                lambda w, c=lang_code: (
-                    self.update_setting('language', c)
-                    if w.get_active() else None
-                )
-            )
-            lang_radio.set_active(self.language == lang_code)
-            lang_menu.append(lang_radio)
+        for name, code in languages:
+            lang_menu.append(name, f"app.set-language::{code}")
+        settings.append_submenu("Language", lang_menu)
 
-        settings_menu.append(lang_item)
+        # Add settings section
+        menu.append_section(None, settings)
 
-        # 4. Speech Detection Settings submenu
-        speech_item = Gtk.MenuItem(label="Speech Detection")
-        speech_menu = Gtk.Menu()
-        speech_item.set_submenu(speech_menu)
+        # Add actions
+        self._add_actions()
 
-        # Min Speech Duration
-        min_speech_item = Gtk.MenuItem(label="Min Speech Duration (s)")
-        min_speech_menu = Gtk.Menu()
-        min_speech_item.set_submenu(min_speech_menu)
-        
-        durations = [0.3, 0.5, 1.0, 1.5, 2.0]
-        duration_group = None
-        for duration in durations:
-            if duration_group is None:
-                duration_radio = Gtk.RadioMenuItem(label=str(duration))
-                duration_group = duration_radio
-            else:
-                duration_radio = Gtk.RadioMenuItem.new_with_label_from_widget(
-                    duration_group, str(duration)
-                )
-            duration_radio.connect(
-                'activate',
-                lambda w, d=duration: (
-                    self.update_setting('min_speech_duration', d)
-                    if w.get_active() else None
-                )
-            )
-            duration_radio.set_active(
-                abs(self.settings['min_speech_duration'] - duration) < 0.01
-            )
-            min_speech_menu.append(duration_radio)
-
-        speech_menu.append(min_speech_item)
-
-        # Max Silence Duration
-        max_silence_item = Gtk.MenuItem(label="Max Silence Duration (s)")
-        max_silence_menu = Gtk.Menu()
-        max_silence_item.set_submenu(max_silence_menu)
-        
-        silences = [0.5, 1.0, 1.5, 2.0, 3.0]
-        silence_group = None
-        for silence in silences:
-            if silence_group is None:
-                silence_radio = Gtk.RadioMenuItem(label=str(silence))
-                silence_group = silence_radio
-            else:
-                silence_radio = Gtk.RadioMenuItem.new_with_label_from_widget(
-                    silence_group, str(silence)
-                )
-            silence_radio.connect(
-                'activate',
-                lambda w, s=silence: (
-                    self.update_setting('max_silence_duration', s)
-                    if w.get_active() else None
-                )
-            )
-            silence_radio.set_active(
-                abs(self.settings['max_silence_duration'] - silence) < 0.01
-            )
-            max_silence_menu.append(silence_radio)
-
-        speech_menu.append(max_silence_item)
-
-        # Speech Start Chunks
-        chunks_item = Gtk.MenuItem(label="Speech Start Chunks")
-        chunks_menu = Gtk.Menu()
-        chunks_item.set_submenu(chunks_menu)
-        
-        for chunks in range(1, 6):
-            if chunks == 1:
-                chunks_radio = Gtk.RadioMenuItem(label=str(chunks))
-                chunks_group = chunks_radio
-            else:
-                chunks_radio = Gtk.RadioMenuItem.new_with_label_from_widget(
-                    chunks_group, str(chunks)
-                )
-            chunks_radio.connect(
-                'activate',
-                lambda w, c=chunks: (
-                    self.update_setting('speech_start_chunks', c)
-                    if w.get_active() else None
-                )
-            )
-            chunks_radio.set_active(
-                self.settings['speech_start_chunks'] == chunks
-            )
-            chunks_menu.append(chunks_radio)
-
-        speech_menu.append(chunks_item)
-
-        # Noise Reduction Threshold
-        noise_item = Gtk.MenuItem(label="Noise Reduction")
-        noise_menu = Gtk.Menu()
-        noise_item.set_submenu(noise_menu)
-        
-        thresholds = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5]
-        threshold_group = None
-        for threshold in thresholds:
-            if threshold_group is None:
-                threshold_radio = Gtk.RadioMenuItem(label=str(threshold))
-                threshold_group = threshold_radio
-            else:
-                threshold_radio = Gtk.RadioMenuItem.new_with_label_from_widget(
-                    threshold_group, str(threshold)
-                )
-            threshold_radio.connect(
-                'activate',
-                lambda w, t=threshold: (
-                    self.update_setting('noise_reduce_threshold', t)
-                    if w.get_active() else None
-                )
-            )
-            threshold_radio.set_active(
-                abs(self.settings['noise_reduce_threshold'] - threshold) < 0.01
-            )
-            noise_menu.append(threshold_radio)
-
-        speech_menu.append(noise_item)
-
-        settings_menu.append(speech_item)
-
-        # 5. VAD sensitivity menu
-        vad_item = Gtk.MenuItem(label="VAD Sensitivity")
-        vad_menu = Gtk.Menu()
-        vad_item.set_submenu(vad_menu)
-
-        vad_group = None
-        for level in range(4):
-            if vad_group is None:
-                vad_radio = Gtk.RadioMenuItem(label=str(level))
-                vad_group = vad_radio
-            else:
-                vad_radio = Gtk.RadioMenuItem.new_with_label_from_widget(
-                    vad_group, str(level)
-                )
-            vad_radio.connect(
-                'activate',
-                lambda w, l=level: (
-                    self.update_setting('vad_sensitivity', l)
-                    if w.get_active() else None
-                )
-            )
-            vad_radio.set_active(self.vad_sensitivity == level)
-            vad_menu.append(vad_radio)
-
-        settings_menu.append(vad_item)
-
-        # 6. Auto-detect speech toggle
-        auto_detect = Gtk.CheckMenuItem(label="Auto-detect Speech")
-        auto_detect.set_active(self.auto_detect_speech)
-        auto_detect.connect(
-            'toggled',
-            lambda w: self.update_setting('auto_detect_speech', w.get_active())
+    def _add_actions(self) -> None:
+        """Add actions for menu items."""
+        # Mode action
+        mode_action = Gio.SimpleAction.new_stateful(
+            "set-mode",
+            GLib.VariantType.new("s"),
+            GLib.Variant.new_string(self.transcription_mode)
         )
-        settings_menu.append(auto_detect)
+        mode_action.connect("activate", self._on_mode_change)
+        self.app.add_action(mode_action)
 
-        # 7. Add punctuation toggle
-        add_punct = Gtk.CheckMenuItem(label="Add Punctuation")
-        add_punct.set_active(self.add_punctuation)
-        add_punct.connect(
-            'toggled',
-            lambda w: self.update_setting('add_punctuation', w.get_active())
+        # Model action
+        model_action = Gio.SimpleAction.new_stateful(
+            "set-model",
+            GLib.VariantType.new("s"),
+            GLib.Variant.new_string(self.model_size)
         )
-        settings_menu.append(add_punct)
+        model_action.connect("activate", self._on_model_change)
+        self.app.add_action(model_action)
 
-        self.menu.append(settings_item)
+        # Language action
+        lang_action = Gio.SimpleAction.new_stateful(
+            "set-language",
+            GLib.VariantType.new("s"),
+            GLib.Variant.new_string(self.language)
+        )
+        lang_action.connect("activate", self._on_language_change)
+        self.app.add_action(lang_action)
 
-        # Quit item
-        quit_item = Gtk.MenuItem(label="Quit")
-        quit_item.connect('activate', self.quit)
-        self.menu.append(quit_item)
+        # Quit action
+        quit_action = Gio.SimpleAction.new("quit", None)
+        quit_action.connect("activate", self._on_quit)
+        self.app.add_action(quit_action)
 
-        self.menu.show_all()
+    def _on_record_clicked(self, button: Gtk.Button) -> None:
+        """Handle record button click."""
+        if not self.recording:
+            self.start_recording()
+        else:
+            self.stop_recording()
+
+    def _on_mode_change(
+        self,
+        action: Gio.SimpleAction,
+        parameter: GLib.Variant
+    ) -> None:
+        """Handle transcription mode change."""
+        mode = parameter.get_string()
+        action.set_state(parameter)
+        self.update_setting('transcription_mode', mode)
+
+    def _on_model_change(
+        self,
+        action: Gio.SimpleAction,
+        parameter: GLib.Variant
+    ) -> None:
+        """Handle model size change."""
+        size = parameter.get_string()
+        action.set_state(parameter)
+        self.update_setting('model_size', size)
+
+    def _on_language_change(
+        self,
+        action: Gio.SimpleAction,
+        parameter: GLib.Variant
+    ) -> None:
+        """Handle language change."""
+        lang = parameter.get_string()
+        action.set_state(parameter)
+        self.update_setting('language', lang)
+
+    def _on_quit(self, action: Gio.SimpleAction, parameter: None) -> None:
+        """Handle quit action."""
+        self.quit(None)
+
+    def update_status(self, status: str) -> None:
+        """Update the status label."""
+        self.status_label.set_text(status)
+
+    def quit(self, _: Any) -> None:
+        """Clean up and quit the application."""
+        self.running = False
+        if hasattr(self, 'audio_thread'):
+            self.audio_thread.join()
+        self.app.quit()
+
+    def run(self) -> None:
+        """Start the application."""
+        # Start audio processing in a separate thread
+        self.audio_thread = threading.Thread(
+            target=self.audio_loop,
+            daemon=True
+        )
+        self.audio_thread.start()
+        
+        # Run the application
+        self.app.run(None)
 
     def init_audio(self) -> None:
         """Initialize audio components."""
@@ -530,42 +319,30 @@ class SpeechToTextApp:
             # Set up voice activity detection (VAD)
             self.vad = webrtcvad.Vad(self.settings['vad_sensitivity'])
 
-    def update_icon_state(self, state: str) -> None:
-        """Update the tray icon state."""
-        icon_names = {
-            'ready': 'audio-input-microphone',
-            'recording': 'audio-input-microphone-high',
-            'computing': 'audio-input-microphone-medium',
-            'error': 'audio-input-microphone-low',
-            'no_mic': 'audio-input-microphone-muted'
-        }
-        self.indicator.set_icon(icon_names.get(state, 'audio-input-microphone'))
-
     def update_setting(self, key: str, value: Any) -> None:
         """Update a setting and save to config."""
         self.settings[key] = value
-        save_settings(self.settings)
         
         # Apply setting changes
         if key == 'transcription_mode':
             if value == 'local':
                 self.model = WhisperModel(
-                    self.settings['model_size'], device="cpu", compute_type="int8"
+                    self.settings['model_size'],
+                    device="cpu",
+                    compute_type="int8"
                 )
             elif value == 'openai':
                 openai.api_key = self.settings['openai_api_key']
         
         elif key == 'model_size' and self.settings['transcription_mode'] == 'local':
             self.model = WhisperModel(
-                value, device="cpu", compute_type="int8"
+                value,
+                device="cpu",
+                compute_type="int8"
             )
         
         elif key == 'vad_sensitivity':
             self.vad = webrtcvad.Vad(value)
-        
-        elif key == 'use_clipboard':
-            self.use_clipboard = value
-            self.update_icon_state('ready')
         
         elif key == 'sample_rate':
             self.chunk_size = int(value * 0.03)
@@ -575,7 +352,8 @@ class SpeechToTextApp:
                 self.audio_thread.join()
                 self.running = True
                 self.audio_thread = threading.Thread(
-                    target=self.audio_loop, daemon=True
+                    target=self.audio_loop,
+                    daemon=True
                 )
                 self.audio_thread.start()
 
@@ -603,14 +381,14 @@ class SpeechToTextApp:
 
         print("Manual recording started.")
         self.recording = True
-        self.update_icon_state('recording')
+        self.update_status('Recording')
         # Clear any previous audio data.
         self.audio_buffer = bytearray()
 
     def stop_recording(self) -> None:
         print("Manual recording stopped.")
         self.recording = False
-        self.update_icon_state('ready')
+        self.update_status('Ready')
         # If there is buffered audio, process it.
         if self.audio_buffer:
             self.process_audio_buffer()
@@ -641,7 +419,7 @@ class SpeechToTextApp:
                 )
             except Exception as e:
                 print("Audio stream error:", e)
-                self.update_icon_state('error')
+                self.update_status('Error')
                 continue
 
             # Apply noise reduction if enabled
@@ -674,7 +452,7 @@ class SpeechToTextApp:
             if should_start:
                 if not self.recording:  # Auto-detection just started
                     print("Speech detected, starting recording...")
-                    self.update_icon_state('recording')
+                    self.update_status('Recording')
                 self.audio_buffer.extend(data)
                 recording_duration += chunk_duration
                 silent_chunks = 0 if is_speech else silent_chunks + 1
@@ -698,9 +476,9 @@ class SpeechToTextApp:
                     # Only process if we meet minimum duration
                     if recording_duration >= self.settings['min_audio_length']:
                         print(f"Processing audio segment ({recording_duration:.1f}s)")
-                        self.update_icon_state('computing')
+                        self.update_status('Computing')
                         self.process_audio_buffer()
-                        self.update_icon_state('ready')
+                        self.update_status('Ready')
                     else:
                         print(f"Discarding short audio segment ({recording_duration:.1f}s)")
 
@@ -713,7 +491,7 @@ class SpeechToTextApp:
                     
                     if self.recording:  # Was manual recording
                         self.recording = False
-                        self.update_icon_state('ready')
+                        self.update_status('Ready')
 
             time.sleep(0.01)  # Small sleep to prevent CPU overuse
             
@@ -753,7 +531,7 @@ class SpeechToTextApp:
                 print(f"Typed: {text}")
             except Exception as e:
                 print(f"Error typing text: {e}")
-                self.update_icon_state('error')
+                self.update_status('Error')
 
     # ------------------------------
     def transcribe_audio(self, audio_filename: str) -> str:
@@ -805,41 +583,8 @@ class SpeechToTextApp:
                 
         except Exception as e:
             print(f"Transcription error: {e}")
-            self.update_icon_state('error')
+            self.update_status('Error')
             return ""
-
-    # ------------------------------
-    def quit(self, _: Any) -> None:
-        """Clean up and quit the application."""
-        self.running = False
-        if hasattr(self, 'audio_thread'):
-            self.audio_thread.join()
-        Gtk.main_quit()
-
-    def run(self) -> None:
-        """Start the application."""
-        # Start audio processing in a separate thread
-        self.audio_thread = threading.Thread(target=self.audio_loop, daemon=True)
-        self.audio_thread.start()
-        Gtk.main()
-
-    def process_audio_chunk(self, data: bytes) -> None:
-        """Process a single chunk of audio data.
-        
-        Args:
-            data: Raw audio data bytes.
-        """
-        # Apply noise reduction if enabled
-        if self.settings['noise_reduce_threshold'] > 0:
-            data = noise_reduction(
-                data,
-                self.settings['sample_rate'],
-                threshold=self.settings['noise_reduce_threshold']
-            )
-        
-        # Add to buffer if recording
-        if self.recording:
-            self.audio_buffer.extend(data)
 
 
 # ------------------------------

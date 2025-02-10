@@ -8,6 +8,9 @@ from whisper_widget.app import (
     noise_reduction,
     SpeechToTextApp
 )
+import unittest
+import sounddevice as sd
+import pyaudio
 
 
 class MockStream:
@@ -33,10 +36,24 @@ class MockStream:
 class MockPyAudio:
     def __init__(self):
         self.streams = []
-    
-    def open(self, format=None, channels=None, rate=None, input=None,
-             frames_per_buffer=None, stream_callback=None, start=True,
-             input_device_index=None, **kwargs):
+        self.sample_rate = 16000
+        self.audio_format = pyaudio.paInt16
+
+    def get_sample_size(self, format_type):
+        return 2  # 16-bit audio = 2 bytes per sample
+
+    def open(
+        self,
+        format=None,
+        channels=None,
+        rate=None,
+        input=None,
+        frames_per_buffer=None,
+        stream_callback=None,
+        start=True,
+        input_device_index=None,
+        **kwargs
+    ):
         stream = MockStream()
         self.streams.append(stream)
         return stream
@@ -67,7 +84,9 @@ def test_check_microphone_access_no_device():
     """Test microphone access check with no device available."""
     with patch('pyaudio.PyAudio') as mock_pyaudio:
         mock_instance = mock_pyaudio.return_value
-        mock_instance.get_default_input_device_info.side_effect = OSError("No device found")
+        mock_instance.get_default_input_device_info.side_effect = (
+            OSError("No device found")
+        )
         assert check_microphone_access() is False
 
 
@@ -103,6 +122,10 @@ def mock_whisper_app(mock_audio):
         # Replace the real model with our mock
         app.model = mock_model_instance
         app.vad = mock_vad_instance
+        app.sample_rate = 16000  # Add sample rate
+        app.audio_format = pyaudio.paInt16  # Add audio format
+        app.channels = 1  # Add channels
+        app.p = MockPyAudio()  # Add PyAudio instance
         
         return app
 
@@ -175,7 +198,12 @@ def test_auto_detection_start_stop(mock_whisper_app):
     test_file = "test_audio.wav"
     sample_rate = 16000
     duration = 2  # seconds
-    samples = np.random.randint(-32768, 32767, duration * sample_rate, dtype=np.int16)
+    samples = np.random.randint(
+        -32768,
+        32767,
+        duration * sample_rate,
+        dtype=np.int16
+    )
     
     with wave.open(test_file, 'wb') as wf:
         wf.setnchannels(1)
@@ -184,9 +212,18 @@ def test_auto_detection_start_stop(mock_whisper_app):
         wf.writeframes(samples.tobytes())
 
     try:
-        # Mock VAD responses for speech detection
-        speech_pattern = [True, True, False, False, True, True, False, False]
-        app.vad.is_speech = MagicMock(side_effect=speech_pattern)
+        # Create a repeating pattern for speech detection
+        base_pattern = [True, True, False, False]
+        pattern_repeats = 10  # Repeat pattern 10 times
+        speech_pattern = base_pattern * pattern_repeats
+        
+        def speech_detector(data, rate):
+            try:
+                return speech_pattern.pop(0)
+            except IndexError:
+                return False
+
+        app.vad.is_speech = speech_detector
 
         # Process audio in chunks
         chunk_size = int(sample_rate * 0.03)  # 30ms chunks
@@ -240,7 +277,8 @@ def test_speech_silence_duration_tracking(mock_whisper_app):
     chunk_size = int(sample_rate * chunk_duration)
     
     # Simulate alternating speech/silence pattern
-    speech_pattern = [True] * 20 + [False] * 40  # 600ms speech + 1200ms silence
+    # 600ms speech + 1200ms silence
+    speech_pattern = [True] * 20 + [False] * 40
     app.vad.is_speech = MagicMock(side_effect=speech_pattern)
     
     # Process chunks
@@ -291,3 +329,35 @@ def test_noise_reduction_integration(mock_whisper_app):
             app.sample_rate,
             threshold=app.settings['noise_reduce_threshold']
         ) 
+
+
+class TestAudioInput(unittest.TestCase):
+    def test_audio_input(self):
+        """Test if we can capture audio from the default input device"""
+        duration = 1  # seconds
+        sample_rate = 16000
+        
+        # Record some audio
+        recording = sd.rec(
+            int(duration * sample_rate),
+            samplerate=sample_rate,
+            channels=1,
+            dtype=np.float32
+        )
+        sd.wait()  # Wait until recording is finished
+        
+        # Check if we got any signal (non-zero values)
+        self.assertTrue(np.any(recording != 0), "No audio signal detected")
+        
+        # Print max amplitude to see if we're getting meaningful input
+        print(f"Maximum audio amplitude: {np.max(np.abs(recording))}")
+
+
+if __name__ == '__main__':
+    # List available audio devices
+    print("\nAvailable audio devices:")
+    print(sd.query_devices())
+    print("\nDefault devices:")
+    print(f"Input device: {sd.query_devices(kind='input')}")
+    
+    unittest.main() 
