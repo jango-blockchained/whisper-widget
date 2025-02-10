@@ -43,8 +43,36 @@ def check_microphone_access() -> bool:
 # ------------------------------
 # Optional noise cancellation stub.
 # Replace or extend with a real algorithm or library (e.g., noisereduce)
-def noise_reduction(audio_data: bytes, sample_rate: int) -> bytes:
-    # For now, simply return the data unmodified.
+def noise_reduction(
+    audio_data: bytes,
+    sample_rate: int,
+    threshold: float = 0.1
+) -> bytes:
+    """
+    Apply noise reduction to the audio data.
+    
+    Args:
+        audio_data: Raw audio data bytes
+        sample_rate: Audio sample rate in Hz
+        threshold: Noise reduction sensitivity (0.0-1.0)
+        
+    Returns:
+        Processed audio data bytes
+    """
+    # For a basic implementation, we could:
+    # 1. Convert bytes to numpy array
+    # 2. Apply a simple noise gate
+    # 3. Convert back to bytes
+    # 
+    # Example with numpy:
+    # import numpy as np
+    # audio_array = np.frombuffer(audio_data, dtype=np.int16)
+    # max_amplitude = np.max(np.abs(audio_array))
+    # noise_gate = max_amplitude * threshold
+    # audio_array[np.abs(audio_array) < noise_gate] = 0
+    # return audio_array.tobytes()
+    
+    # For now, simply return the data unmodified
     return audio_data
 
 
@@ -60,7 +88,14 @@ def load_settings() -> Dict[str, Any]:
         'auto_detect_speech': True,
         'add_punctuation': True,
         'sample_rate': 16000,
-        'silence_threshold': 400,
+        # Speech detection parameters
+        'min_speech_duration': 0.5,  # Minimum duration (seconds) to consider as speech
+        'max_silence_duration': 1.0,  # Maximum silence duration (seconds) before stopping
+        'min_audio_length': 1.0,  # Minimum audio segment length (seconds) to process
+        'speech_threshold': 0.5,  # Speech probability threshold (0.0-1.0)
+        'silence_threshold': 10,  # Number of silent chunks before stopping
+        'speech_start_chunks': 2,  # Number of speech chunks to trigger recording
+        'noise_reduce_threshold': 0.1,  # Noise reduction sensitivity (0.0-1.0)
     }
     
     if config_file.exists():
@@ -201,7 +236,10 @@ class SpeechToTextApp:
         openai_mode = Gtk.RadioMenuItem.new_with_label_from_widget(local_mode, "OpenAI")
         openai_mode.connect(
             'activate',
-            lambda w: self.update_setting('transcription_mode', 'openai') if w.get_active() else None
+            lambda w: (
+                self.update_setting('transcription_mode', 'openai')
+                if w.get_active() else None
+            )
         )
         openai_mode.set_active(self.transcription_mode == 'openai')
         mode_menu.append(openai_mode)
@@ -220,10 +258,15 @@ class SpeechToTextApp:
                 model_radio = Gtk.RadioMenuItem(label=size)
                 model_group = model_radio
             else:
-                model_radio = Gtk.RadioMenuItem.new_with_label_from_widget(model_group, size)
+                model_radio = Gtk.RadioMenuItem.new_with_label_from_widget(
+                    model_group, size
+                )
             model_radio.connect(
                 'activate',
-                lambda w, s=size: self.update_setting('model_size', s) if w.get_active() else None
+                lambda w, s=size: (
+                    self.update_setting('model_size', s)
+                    if w.get_active() else None
+                )
             )
             model_radio.set_active(self.model_size == size)
             model_menu.append(model_radio)
@@ -251,17 +294,143 @@ class SpeechToTextApp:
                 lang_radio = Gtk.RadioMenuItem(label=lang_name)
                 lang_group = lang_radio
             else:
-                lang_radio = Gtk.RadioMenuItem.new_with_label_from_widget(lang_group, lang_name)
+                lang_radio = Gtk.RadioMenuItem.new_with_label_from_widget(
+                    lang_group, lang_name
+                )
             lang_radio.connect(
                 'activate',
-                lambda w, c=lang_code: self.update_setting('language', c) if w.get_active() else None
+                lambda w, c=lang_code: (
+                    self.update_setting('language', c)
+                    if w.get_active() else None
+                )
             )
             lang_radio.set_active(self.language == lang_code)
             lang_menu.append(lang_radio)
 
         settings_menu.append(lang_item)
 
-        # 4. VAD sensitivity menu
+        # 4. Speech Detection Settings submenu
+        speech_item = Gtk.MenuItem(label="Speech Detection")
+        speech_menu = Gtk.Menu()
+        speech_item.set_submenu(speech_menu)
+
+        # Min Speech Duration
+        min_speech_item = Gtk.MenuItem(label="Min Speech Duration (s)")
+        min_speech_menu = Gtk.Menu()
+        min_speech_item.set_submenu(min_speech_menu)
+        
+        durations = [0.3, 0.5, 1.0, 1.5, 2.0]
+        duration_group = None
+        for duration in durations:
+            if duration_group is None:
+                duration_radio = Gtk.RadioMenuItem(label=str(duration))
+                duration_group = duration_radio
+            else:
+                duration_radio = Gtk.RadioMenuItem.new_with_label_from_widget(
+                    duration_group, str(duration)
+                )
+            duration_radio.connect(
+                'activate',
+                lambda w, d=duration: (
+                    self.update_setting('min_speech_duration', d)
+                    if w.get_active() else None
+                )
+            )
+            duration_radio.set_active(
+                abs(self.settings['min_speech_duration'] - duration) < 0.01
+            )
+            min_speech_menu.append(duration_radio)
+
+        speech_menu.append(min_speech_item)
+
+        # Max Silence Duration
+        max_silence_item = Gtk.MenuItem(label="Max Silence Duration (s)")
+        max_silence_menu = Gtk.Menu()
+        max_silence_item.set_submenu(max_silence_menu)
+        
+        silences = [0.5, 1.0, 1.5, 2.0, 3.0]
+        silence_group = None
+        for silence in silences:
+            if silence_group is None:
+                silence_radio = Gtk.RadioMenuItem(label=str(silence))
+                silence_group = silence_radio
+            else:
+                silence_radio = Gtk.RadioMenuItem.new_with_label_from_widget(
+                    silence_group, str(silence)
+                )
+            silence_radio.connect(
+                'activate',
+                lambda w, s=silence: (
+                    self.update_setting('max_silence_duration', s)
+                    if w.get_active() else None
+                )
+            )
+            silence_radio.set_active(
+                abs(self.settings['max_silence_duration'] - silence) < 0.01
+            )
+            max_silence_menu.append(silence_radio)
+
+        speech_menu.append(max_silence_item)
+
+        # Speech Start Chunks
+        chunks_item = Gtk.MenuItem(label="Speech Start Chunks")
+        chunks_menu = Gtk.Menu()
+        chunks_item.set_submenu(chunks_menu)
+        
+        for chunks in range(1, 6):
+            if chunks == 1:
+                chunks_radio = Gtk.RadioMenuItem(label=str(chunks))
+                chunks_group = chunks_radio
+            else:
+                chunks_radio = Gtk.RadioMenuItem.new_with_label_from_widget(
+                    chunks_group, str(chunks)
+                )
+            chunks_radio.connect(
+                'activate',
+                lambda w, c=chunks: (
+                    self.update_setting('speech_start_chunks', c)
+                    if w.get_active() else None
+                )
+            )
+            chunks_radio.set_active(
+                self.settings['speech_start_chunks'] == chunks
+            )
+            chunks_menu.append(chunks_radio)
+
+        speech_menu.append(chunks_item)
+
+        # Noise Reduction Threshold
+        noise_item = Gtk.MenuItem(label="Noise Reduction")
+        noise_menu = Gtk.Menu()
+        noise_item.set_submenu(noise_menu)
+        
+        thresholds = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5]
+        threshold_group = None
+        for threshold in thresholds:
+            if threshold_group is None:
+                threshold_radio = Gtk.RadioMenuItem(label=str(threshold))
+                threshold_group = threshold_radio
+            else:
+                threshold_radio = Gtk.RadioMenuItem.new_with_label_from_widget(
+                    threshold_group, str(threshold)
+                )
+            threshold_radio.connect(
+                'activate',
+                lambda w, t=threshold: (
+                    self.update_setting('noise_reduce_threshold', t)
+                    if w.get_active() else None
+                )
+            )
+            threshold_radio.set_active(
+                abs(self.settings['noise_reduce_threshold'] - threshold) < 0.01
+            )
+            noise_menu.append(threshold_radio)
+
+        speech_menu.append(noise_item)
+
+        settings_menu.append(speech_item)
+
+        # 5. VAD sensitivity menu
         vad_item = Gtk.MenuItem(label="VAD Sensitivity")
         vad_menu = Gtk.Menu()
         vad_item.set_submenu(vad_menu)
@@ -272,17 +441,22 @@ class SpeechToTextApp:
                 vad_radio = Gtk.RadioMenuItem(label=str(level))
                 vad_group = vad_radio
             else:
-                vad_radio = Gtk.RadioMenuItem.new_with_label_from_widget(vad_group, str(level))
+                vad_radio = Gtk.RadioMenuItem.new_with_label_from_widget(
+                    vad_group, str(level)
+                )
             vad_radio.connect(
                 'activate',
-                lambda w, l=level: self.update_setting('vad_sensitivity', l) if w.get_active() else None
+                lambda w, l=level: (
+                    self.update_setting('vad_sensitivity', l)
+                    if w.get_active() else None
+                )
             )
             vad_radio.set_active(self.vad_sensitivity == level)
             vad_menu.append(vad_radio)
 
         settings_menu.append(vad_item)
 
-        # 5. Auto-detect speech toggle
+        # 6. Auto-detect speech toggle
         auto_detect = Gtk.CheckMenuItem(label="Auto-detect Speech")
         auto_detect.set_active(self.auto_detect_speech)
         auto_detect.connect(
@@ -291,7 +465,7 @@ class SpeechToTextApp:
         )
         settings_menu.append(auto_detect)
 
-        # 6. Add punctuation toggle
+        # 7. Add punctuation toggle
         add_punct = Gtk.CheckMenuItem(label="Add Punctuation")
         add_punct.set_active(self.add_punctuation)
         add_punct.connect(
@@ -434,8 +608,13 @@ class SpeechToTextApp:
             input=True,
             frames_per_buffer=self.chunk_size
         )
-        # This threshold defines consecutive "silent" chunks for end-of-speech
+        
+        # Initialize speech detection state
         silent_chunks = 0
+        speech_chunks = 0
+        recording_duration = 0.0
+        silence_duration = 0.0
+        chunk_duration = self.chunk_size / self.settings['sample_rate']
 
         while self.running:
             try:
@@ -447,28 +626,79 @@ class SpeechToTextApp:
                 self.update_icon_state('error')
                 continue
 
-            # Determine if the chunk contains speech.
+            # Apply noise reduction if enabled
+            if self.settings['noise_reduce_threshold'] > 0:
+                data = noise_reduction(
+                    data, 
+                    self.settings['sample_rate'],
+                    threshold=self.settings['noise_reduce_threshold']
+                )
+
+            # Determine if the chunk contains speech
             is_speech = self.vad.is_speech(data, self.settings['sample_rate'])
 
-            # If manually recording or if VAD detects speech, add to buffer.
-            if self.recording or is_speech:
-                if not self.recording:  # Auto-detection started
-                    self.update_icon_state('recording')
-                processed = noise_reduction(data, self.settings['sample_rate'])
-                self.audio_buffer.extend(processed)
-                silent_chunks = 0
+            # Update speech/silence tracking
+            if is_speech:
+                speech_chunks += 1
+                silence_duration = 0.0
             else:
-                # If not recording and we have data, count silence.
-                if self.audio_buffer:
-                    silent_chunks += 1
-                    if silent_chunks > self.settings['silence_threshold']:
-                        print("Speech segment detected; processing…")
+                silence_duration += chunk_duration
+
+            # Start recording if:
+            # 1. Manual recording is active, or
+            # 2. Auto-detect is on and we have enough speech chunks
+            should_start = (
+                self.recording or 
+                (self.settings['auto_detect_speech'] and 
+                 speech_chunks >= self.settings['speech_start_chunks'])
+            )
+
+            if should_start:
+                if not self.recording:  # Auto-detection just started
+                    print("Speech detected, starting recording...")
+                    self.update_icon_state('recording')
+                self.audio_buffer.extend(data)
+                recording_duration += chunk_duration
+                silent_chunks = 0 if is_speech else silent_chunks + 1
+            else:
+                speech_chunks = max(0, speech_chunks - 1)  # Decay speech chunks
+
+            # Check if we should stop recording
+            if self.audio_buffer:
+                # Stop conditions:
+                # 1. Too much silence
+                # 2. Maximum silence duration reached
+                # 3. Minimum speech duration met and silence detected
+                should_stop = (
+                    silent_chunks > self.settings['silence_threshold'] or
+                    silence_duration >= self.settings['max_silence_duration'] or
+                    (recording_duration >= self.settings['min_speech_duration'] and
+                     silence_duration > 0.3)  # Small silence buffer
+                )
+
+                if should_stop:
+                    # Only process if we meet minimum duration
+                    if recording_duration >= self.settings['min_audio_length']:
+                        print(f"Processing audio segment ({recording_duration:.1f}s)")
                         self.update_icon_state('computing')
                         self.process_audio_buffer()
-                        self.audio_buffer = bytearray()
-                        silent_chunks = 0
                         self.update_icon_state('ready')
-            time.sleep(0.01)
+                    else:
+                        print(f"Discarding short audio segment ({recording_duration:.1f}s)")
+
+                    # Reset state
+                    self.audio_buffer = bytearray()
+                    recording_duration = 0.0
+                    silence_duration = 0.0
+                    speech_chunks = 0
+                    silent_chunks = 0
+                    
+                    if self.recording:  # Was manual recording
+                        self.recording = False
+                        self.update_icon_state('ready')
+
+            time.sleep(0.01)  # Small sleep to prevent CPU overuse
+            
         stream.stop_stream()
         stream.close()
 

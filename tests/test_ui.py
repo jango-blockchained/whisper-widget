@@ -1,6 +1,7 @@
 import pytest
 from unittest.mock import MagicMock, patch
 from app import SpeechToTextApp
+from gi.repository import Gtk
 
 
 @pytest.fixture
@@ -178,11 +179,139 @@ def test_menu_items(mock_app):
 def test_toggle_options(mock_app):
     """Test toggle option menu items."""
     settings_menu = mock_app.menu.get_children()[0].get_submenu()
-    
+
     # Test auto-detect speech toggle
-    auto_detect = settings_menu.get_children()[4]
+    auto_detect = settings_menu.get_children()[5]  # CheckMenuItem
+    assert isinstance(auto_detect, Gtk.CheckMenuItem)
     assert auto_detect.get_active() == mock_app.auto_detect_speech
-    
+
     # Test add punctuation toggle
-    add_punct = settings_menu.get_children()[5]
-    assert add_punct.get_active() == mock_app.add_punctuation 
+    add_punct = settings_menu.get_children()[6]  # CheckMenuItem
+    assert isinstance(add_punct, Gtk.CheckMenuItem)
+    assert add_punct.get_active() == mock_app.add_punctuation
+
+    # Test menu item activation
+    auto_detect.set_active(not mock_app.auto_detect_speech)
+    assert mock_app.settings['auto_detect_speech'] == (not mock_app.auto_detect_speech)
+
+    add_punct.set_active(not mock_app.add_punctuation)
+    assert mock_app.settings['add_punctuation'] == (not mock_app.add_punctuation)
+
+
+def test_speech_detection_menu(mock_app):
+    """Test speech detection settings menu items."""
+    app = mock_app
+    settings_menu = app.menu.get_children()[0].get_submenu()
+    speech_menu = settings_menu.get_children()[3].get_submenu()  # Speech Detection menu
+
+    # Test min speech duration menu
+    min_speech_menu = speech_menu.get_children()[0].get_submenu()
+    assert min_speech_menu is not None
+    assert len(min_speech_menu.get_children()) == 5  # [0.3, 0.5, 1.0, 1.5, 2.0]
+
+    # Test max silence duration menu
+    max_silence_menu = speech_menu.get_children()[1].get_submenu()
+    assert max_silence_menu is not None
+    assert len(max_silence_menu.get_children()) == 5  # [0.5, 1.0, 1.5, 2.0, 3.0]
+
+    # Test speech start chunks menu
+    chunks_menu = speech_menu.get_children()[2].get_submenu()
+    assert chunks_menu is not None
+    assert len(chunks_menu.get_children()) == 5  # [1, 2, 3, 4, 5]
+
+    # Test noise reduction menu
+    noise_menu = speech_menu.get_children()[3].get_submenu()
+    assert noise_menu is not None
+    assert len(noise_menu.get_children()) == 6  # [0.0, 0.1, 0.2, 0.3, 0.4, 0.5]
+
+
+def test_speech_detection_settings_update(mock_app):
+    """Test updating speech detection settings through menu."""
+    app = mock_app
+    settings_menu = app.menu.get_children()[0].get_submenu()
+    speech_menu = settings_menu.get_children()[3].get_submenu()
+
+    # Test min speech duration update
+    min_speech_menu = speech_menu.get_children()[0].get_submenu()
+    min_speech_item = min_speech_menu.get_children()[2]  # 1.0s option
+    min_speech_item.activate()
+    assert app.settings['min_speech_duration'] == 1.0
+
+    # Test max silence duration update
+    max_silence_menu = speech_menu.get_children()[1].get_submenu()
+    max_silence_item = max_silence_menu.get_children()[3]  # 2.0s option
+    max_silence_item.activate()
+    assert app.settings['max_silence_duration'] == 2.0
+
+    # Test speech start chunks update
+    chunks_menu = speech_menu.get_children()[2].get_submenu()
+    chunks_item = chunks_menu.get_children()[2]  # 3 chunks option
+    chunks_item.activate()
+    assert app.settings['speech_start_chunks'] == 3
+
+    # Test noise reduction threshold update
+    noise_menu = speech_menu.get_children()[3].get_submenu()
+    noise_item = noise_menu.get_children()[2]  # 0.2 threshold option
+    noise_item.activate()
+    assert app.settings['noise_reduce_threshold'] == 0.2
+
+
+def test_speech_detection_settings_persistence(mock_app, tmp_path):
+    """Test that speech detection settings persist after app restart."""
+    app = mock_app
+    
+    # Update settings
+    test_settings = {
+        'min_speech_duration': 1.5,
+        'max_silence_duration': 2.0,
+        'speech_start_chunks': 3,
+        'noise_reduce_threshold': 0.3
+    }
+    
+    for key, value in test_settings.items():
+        app.update_setting(key, value)
+    
+    # Create new app instance
+    new_app = SpeechToTextApp()
+    
+    # Verify settings persisted
+    for key, value in test_settings.items():
+        assert abs(new_app.settings[key] - value) < 0.01
+
+
+def test_speech_detection_menu_state(mock_app):
+    """Test that menu items reflect current settings state."""
+    app = mock_app
+    settings_menu = app.menu.get_children()[0].get_submenu()
+    speech_menu = settings_menu.get_children()[3].get_submenu()
+
+    # Test min speech duration state
+    min_speech_menu = speech_menu.get_children()[0].get_submenu()
+    for i, item in enumerate(min_speech_menu.get_children()):
+        durations = [0.3, 0.5, 1.0, 1.5, 2.0]
+        assert item.get_active() == (
+            abs(durations[i] - app.settings['min_speech_duration']) < 0.01
+        )
+
+    # Test max silence duration state
+    max_silence_menu = speech_menu.get_children()[1].get_submenu()
+    for i, item in enumerate(max_silence_menu.get_children()):
+        silences = [0.5, 1.0, 1.5, 2.0, 3.0]
+        assert item.get_active() == (
+            abs(silences[i] - app.settings['max_silence_duration']) < 0.01
+        )
+
+    # Test speech start chunks state
+    chunks_menu = speech_menu.get_children()[2].get_submenu()
+    for i, item in enumerate(chunks_menu.get_children()):
+        assert item.get_active() == (
+            (i + 1) == app.settings['speech_start_chunks']
+        )
+
+    # Test noise reduction threshold state
+    noise_menu = speech_menu.get_children()[3].get_submenu()
+    for i, item in enumerate(noise_menu.get_children()):
+        thresholds = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5]
+        assert item.get_active() == (
+            abs(thresholds[i] - app.settings['noise_reduce_threshold']) < 0.01
+        ) 

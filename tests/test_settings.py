@@ -14,7 +14,13 @@ def test_load_settings_default(temp_config_dir):
     assert settings['auto_detect_speech'] is True
     assert settings['add_punctuation'] is True
     assert settings['sample_rate'] == 16000
-    assert settings['silence_threshold'] == 400
+    assert settings['silence_threshold'] == 10
+    assert settings['min_speech_duration'] == 0.5
+    assert settings['max_silence_duration'] == 1.0
+    assert settings['min_audio_length'] == 1.0
+    assert settings['speech_threshold'] == 0.5
+    assert settings['speech_start_chunks'] == 2
+    assert settings['noise_reduce_threshold'] == 0.1
 
 
 def test_save_and_load_settings(temp_config_dir, sample_settings):
@@ -25,7 +31,11 @@ def test_save_and_load_settings(temp_config_dir, sample_settings):
         'transcription_mode': 'clipboard',
         'model_size': 'small',
         'language': 'es',
-        'vad_sensitivity': 2
+        'vad_sensitivity': 2,
+        'min_speech_duration': 1.0,
+        'max_silence_duration': 2.0,
+        'speech_start_chunks': 3,
+        'noise_reduce_threshold': 0.2
     })
     
     # Save the settings

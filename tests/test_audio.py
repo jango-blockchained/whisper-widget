@@ -1,6 +1,8 @@
 import pytest
 from unittest.mock import MagicMock, patch
 import numpy as np
+import wave
+import os
 from app import (
     check_microphone_access,
     noise_reduction,
@@ -120,3 +122,185 @@ def test_app_initialization(mock_whisper_app):
     assert app.model_size in ['tiny', 'base', 'small', 'medium', 'large']
     assert app.language in ['en', 'es', 'fr', 'de', 'zh', 'ja', 'ru']
     assert 1 <= app.vad_sensitivity <= 3 
+
+
+def test_noise_reduction_with_threshold():
+    """Test noise reduction with different thresholds."""
+    # Create test audio data
+    test_data = np.random.randint(-32768, 32767, 1000, dtype=np.int16).tobytes()
+    sample_rate = 16000
+
+    # Test with different thresholds
+    thresholds = [0.0, 0.1, 0.5, 1.0]
+    for threshold in thresholds:
+        result = noise_reduction(test_data, sample_rate, threshold)
+        assert isinstance(result, bytes)
+        assert len(result) == len(test_data)
+
+
+def test_speech_detection_parameters(mock_whisper_app):
+    """Test speech detection parameter initialization and updates."""
+    app = mock_whisper_app
+
+    # Check default values
+    assert app.settings['min_speech_duration'] == 0.5
+    assert app.settings['max_silence_duration'] == 1.0
+    assert app.settings['min_audio_length'] == 1.0
+    assert app.settings['speech_threshold'] == 0.5
+    assert app.settings['silence_threshold'] == 10
+    assert app.settings['speech_start_chunks'] == 2
+    assert app.settings['noise_reduce_threshold'] == 0.1
+
+    # Test updating parameters
+    app.update_setting('min_speech_duration', 1.0)
+    assert app.settings['min_speech_duration'] == 1.0
+
+    app.update_setting('max_silence_duration', 2.0)
+    assert app.settings['max_silence_duration'] == 2.0
+
+    app.update_setting('speech_start_chunks', 3)
+    assert app.settings['speech_start_chunks'] == 3
+
+
+def test_auto_detection_start_stop(mock_whisper_app):
+    """Test auto-detection start and stop conditions."""
+    app = mock_whisper_app
+    app.settings['auto_detect_speech'] = True
+    app.settings['speech_start_chunks'] = 2
+    app.settings['min_speech_duration'] = 0.5
+    app.settings['max_silence_duration'] = 1.0
+    app.recording = False  # Ensure we start not recording
+
+    # Create a temporary WAV file for testing
+    test_file = "test_audio.wav"
+    sample_rate = 16000
+    duration = 2  # seconds
+    samples = np.random.randint(-32768, 32767, duration * sample_rate, dtype=np.int16)
+    
+    with wave.open(test_file, 'wb') as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes(samples.tobytes())
+
+    try:
+        # Mock VAD responses for speech detection
+        speech_pattern = [True, True, False, False, True, True, False, False]
+        app.vad.is_speech = MagicMock(side_effect=speech_pattern)
+
+        # Process audio in chunks
+        chunk_size = int(sample_rate * 0.03)  # 30ms chunks
+        speech_chunks = 0
+        with wave.open(test_file, 'rb') as wf:
+            while True:
+                data = wf.readframes(chunk_size)
+                if not data:
+                    break
+                
+                # Simulate audio processing
+                is_speech = app.vad.is_speech(data, sample_rate)
+                if is_speech:
+                    speech_chunks += 1
+                else:
+                    speech_chunks = max(0, speech_chunks - 1)
+                
+                # Check recording state
+                should_record = (
+                    app.settings['auto_detect_speech'] and 
+                    speech_chunks >= app.settings['speech_start_chunks']
+                )
+                
+                if should_record:
+                    if not app.recording:
+                        app.start_recording()
+                    app.audio_buffer.extend(data)
+                elif app.recording:
+                    app.stop_recording()
+
+        # Verify final state
+        assert not app.recording, "Should stop recording at end"
+        assert len(app.audio_buffer) == 0, "Should have processed buffer"
+
+    finally:
+        # Cleanup
+        if os.path.exists(test_file):
+            os.remove(test_file)
+
+
+def test_speech_silence_duration_tracking(mock_whisper_app):
+    """Test tracking of speech and silence durations."""
+    app = mock_whisper_app
+    app.settings['min_speech_duration'] = 0.5
+    app.settings['max_silence_duration'] = 1.0
+    app.recording = False  # Ensure we start not recording
+    
+    # Create test audio data
+    sample_rate = 16000
+    chunk_duration = 0.03  # 30ms chunks
+    chunk_size = int(sample_rate * chunk_duration)
+    
+    # Simulate alternating speech/silence pattern
+    speech_pattern = [True] * 20 + [False] * 40  # 600ms speech + 1200ms silence
+    app.vad.is_speech = MagicMock(side_effect=speech_pattern)
+    
+    # Process chunks
+    silence_duration = 0.0
+    for i, is_speech in enumerate(speech_pattern):
+        data = np.random.bytes(chunk_size * 2)  # 16-bit audio
+        
+        if is_speech:
+            if not app.recording:
+                app.start_recording()
+            silence_duration = 0.0
+        else:
+            silence_duration += chunk_duration
+            
+        if app.recording:
+            app.audio_buffer.extend(data)
+            
+            # Check if we should stop
+            if silence_duration >= app.settings['max_silence_duration']:
+                app.stop_recording()
+                assert not app.recording, "Should stop after max silence duration"
+    
+    # Cleanup
+    if app.recording:
+        app.stop_recording()
+
+
+def test_noise_reduction_integration(mock_whisper_app):
+    """Test noise reduction integration in audio processing."""
+    app = mock_whisper_app
+    app.settings['noise_reduce_threshold'] = 0.2
+    
+    # Create test audio data
+    sample_rate = 16000
+    chunk_size = int(sample_rate * 0.03)
+    test_data = np.random.bytes(chunk_size * 2)
+    
+    # Mock noise_reduction function to track calls
+    with patch('app.noise_reduction') as mock_noise_reduce:
+        mock_noise_reduce.return_value = test_data
+        
+        # Process audio chunk with noise reduction
+        app.audio_buffer = bytearray()  # Clear buffer
+        app.settings['noise_reduce_threshold'] = 0.2
+        
+        # Simulate processing in audio loop
+        data = test_data
+        if app.settings['noise_reduce_threshold'] > 0:
+            data = noise_reduction(
+                data,
+                sample_rate,
+                threshold=app.settings['noise_reduce_threshold']
+            )
+        app.audio_buffer.extend(data)
+        
+        # Verify noise reduction was called
+        mock_noise_reduce.assert_called_with(
+            test_data,
+            sample_rate,
+            threshold=0.2
+        )
+    
+    app.stop_recording() 
