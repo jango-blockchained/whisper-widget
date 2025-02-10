@@ -60,42 +60,73 @@ python run_app.py
   app = SpeechToTextApp(transcription_mode="openai", openai_api_key="your-api-key")
   ```
 
-## Testing
+## Development and Testing
 
-1. Install test dependencies:
+### Prerequisites
+
+- Python 3.8+
+- GTK 4.0
+- PyGObject
+- PyAudio
+
+### Setup Development Environment
+
+1. Clone the repository
 ```bash
+git clone https://github.com/yourusername/whisper-widget.git
+cd whisper-widget
+```
+
+2. Create a virtual environment
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+3. Install dependencies
+```bash
+pip install -r requirements.txt
 pip install -r tests/requirements-test.txt
 ```
 
-2. Run tests:
+### Running Tests
+
+Run the full test suite with coverage and type checking:
+
 ```bash
-# Run all tests
-pytest
+# Run pytest with coverage
+pytest tests/ --cov=whisper_widget --cov-report=term-missing
 
-# Run tests with coverage report
-pytest --cov=whisper_widget
+# Run mypy type checking
+mypy whisper_widget
 
-# Run specific test file
-pytest tests/test_settings.py
-
-# Run tests in verbose mode
-pytest -v
+# Run linter
+pylint whisper_widget
 ```
 
-### Test Structure
+### Contributing
 
-- `tests/conftest.py`: Common test fixtures and configuration
-- `tests/test_settings.py`: Tests for settings management
-- `tests/test_audio.py`: Tests for audio recording and processing
-- `tests/test_ui.py`: Tests for UI components and interactions
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Write tests for your changes
+5. Ensure all tests pass
+6. Submit a pull request
 
-### Writing Tests
+### Code Quality
 
-When adding new features, please ensure:
-1. Unit tests cover the new functionality
-2. Integration tests verify feature interactions
-3. Mock external dependencies (audio, UI, etc.)
-4. Use fixtures from conftest.py when possible
+- We use `pytest` for unit testing
+- `mypy` for static type checking
+- `pylint` for code linting
+- Aim for at least 70% test coverage
+
+### Continuous Integration
+
+We use GitHub Actions for:
+- Running tests on multiple Python versions
+- Checking code coverage
+- Type checking
+- Linting
 
 ## License
 

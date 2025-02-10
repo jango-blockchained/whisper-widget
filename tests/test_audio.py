@@ -11,6 +11,7 @@ from whisper_widget.app import (
 import unittest
 import sounddevice as sd
 import pyaudio
+import tempfile
 
 
 class MockStream:
@@ -92,15 +93,41 @@ def test_check_microphone_access_no_device():
 
 def test_noise_reduction():
     """Test noise reduction function."""
-    # Create sample audio data
-    audio_data = b'test_audio_data'
-    sample_rate = 16000
+    # Create a sample audio array with noise
+    audio = np.array([0.01, 0.02, 0.5, 0.6, 0.01, 0.02], dtype=np.float32)
     
     # Apply noise reduction
-    reduced = noise_reduction(audio_data, sample_rate)
+    reduced_audio = noise_reduction(audio)
     
-    # Check that output is same as input (since it's a passthrough)
-    assert reduced == audio_data
+    # Check that low-amplitude segments are zeroed out
+    assert np.all(reduced_audio[0:2] == 0)
+    assert np.all(reduced_audio[2:4] != 0)
+    assert np.all(reduced_audio[4:] == 0)
+
+
+def test_noise_reduction_different_thresholds():
+    """Test noise reduction with different thresholds."""
+    # Create a sample audio array
+    audio = np.array([0.1, 0.2, 0.5, 0.6, 0.1, 0.2], dtype=np.float32)
+    
+    # Test with different noise thresholds
+    reduced_low_threshold = noise_reduction(audio, noise_threshold=0.05)
+    reduced_high_threshold = noise_reduction(audio, noise_threshold=0.3)
+    
+    # Low threshold should preserve more of the original signal
+    assert np.count_nonzero(reduced_low_threshold) > np.count_nonzero(reduced_high_threshold)
+
+
+def test_microphone_access():
+    """Test microphone access check."""
+    # This test might need to be adjusted based on the testing environment
+    try:
+        mic_access = check_microphone_access()
+        # The result can be True or False depending on the environment
+        assert isinstance(mic_access, bool)
+    except Exception as e:
+        # If an exception occurs, it should be related to audio device access
+        assert "Cannot access microphone" in str(e)
 
 
 @pytest.fixture
@@ -351,6 +378,60 @@ class TestAudioInput(unittest.TestCase):
         
         # Print max amplitude to see if we're getting meaningful input
         print(f"Maximum audio amplitude: {np.max(np.abs(recording))}")
+
+
+def test_audio_buffer_initialization(mock_app):
+    """Test audio buffer initialization in SpeechToTextApp."""
+    # Verify initial audio buffer state
+    assert hasattr(mock_app, 'audio_buffer')
+    assert isinstance(mock_app.audio_buffer, bytearray)
+    assert len(mock_app.audio_buffer) == 0
+
+
+def test_audio_recording_states(mock_app):
+    """Test different audio recording states."""
+    # Initial state checks
+    assert not mock_app.is_recording
+    assert mock_app.recording_start_time is None
+
+    # Start recording
+    mock_app.start_recording()
+    assert mock_app.is_recording
+    assert mock_app.recording_start_time is not None
+
+    # Stop recording
+    mock_app.stop_recording()
+    assert not mock_app.is_recording
+    assert mock_app.recording_start_time is None
+
+
+def test_create_temporary_wav_file(mock_app):
+    """Test creating a temporary WAV file from audio buffer."""
+    # Prepare mock audio data
+    mock_audio_data = np.random.randint(
+        -32768, 32767, 
+        size=int(mock_app.sample_rate * 1),  # 1 second of audio
+        dtype=np.int16
+    )
+    mock_app.audio_buffer = bytearray(mock_audio_data.tobytes())
+
+    # Create temporary file
+    temp_filename = "temp_audio.wav"
+    try:
+        wf = wave.open(temp_filename, 'wb')
+        wf.setnchannels(mock_app.channels)
+        wf.setsampwidth(mock_app.p.get_sample_size(mock_app.audio_format))
+        wf.setframerate(mock_app.sample_rate)
+        wf.writeframes(mock_app.audio_buffer)
+        wf.close()
+
+        # Verify file was created and has content
+        assert os.path.exists(temp_filename)
+        assert os.path.getsize(temp_filename) > 0
+    finally:
+        # Clean up
+        if os.path.exists(temp_filename):
+            os.remove(temp_filename)
 
 
 if __name__ == '__main__':

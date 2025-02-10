@@ -1058,6 +1058,25 @@ class SpeechToTextApp:
         )
 
 
+def noise_reduction(
+    audio_data: np.ndarray, 
+    noise_threshold: float = 0.15
+) -> np.ndarray:
+    """
+    Perform basic noise reduction on audio data.
+    
+    Args:
+        audio_data (np.ndarray): Input audio data
+        noise_threshold (float): Threshold for noise reduction
+    
+    Returns:
+        np.ndarray: Noise-reduced audio data
+    """
+    # Simple noise reduction by zeroing out low-amplitude segments
+    mask = np.abs(audio_data) > (noise_threshold * np.max(np.abs(audio_data)))
+    return audio_data * mask.astype(audio_data.dtype)
+
+
 # ------------------------------
 if __name__ == "__main__":
     app = SpeechToTextApp()

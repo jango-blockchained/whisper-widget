@@ -1,71 +1,99 @@
+"""Pytest configuration and shared fixtures."""
+
 import os
-import pytest
+import sys
 from pathlib import Path
 import tempfile
-import json
+from typing import Generator, Dict, Any
 from unittest.mock import MagicMock, patch
+
+import pytest
 import numpy as np
 import pyaudio
 
+# Ensure the project root is in the Python path
+sys.path.insert(0, os.path.abspath(
+    os.path.join(os.path.dirname(__file__), '..')
+))
+
 
 class MockStream:
-    def __init__(self, *args, **kwargs):
-        self.is_active = True
-        self._frames = []
+    """Mock audio stream for testing."""
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self.is_active: bool = True
+        self._frames: list = []
     
-    def start_stream(self):
+    def start_stream(self) -> None:
+        """Start the mock stream."""
         self.is_active = True
     
-    def stop_stream(self):
+    def stop_stream(self) -> None:
+        """Stop the mock stream."""
         self.is_active = False
     
-    def close(self):
+    def close(self) -> None:
+        """Close the mock stream."""
         self.is_active = False
     
-    def read(self, chunk_size, exception_on_overflow=True):
+    def read(
+        self, 
+        chunk_size: int, 
+        exception_on_overflow: bool = True
+    ) -> bytes:
+        """
+        Read mock audio data.
+        
+        Args:
+            chunk_size (int): Size of audio chunk
+            exception_on_overflow (bool): Whether to raise on overflow
+        
+        Returns:
+            bytes: Mock audio data
+        """
         if not self.is_active:
-            return None
+            return b''
         return np.random.bytes(chunk_size * 2)
 
 
 class MockPyAudio:
     """Mock PyAudio class for testing."""
-    def __init__(self):
-        self.format = pyaudio.paInt16
-        self.streams = []
+    def __init__(self) -> None:
+        self.format: int = pyaudio.paInt16
+        self.streams: list[MockStream] = []
     
-    def get_default_input_device_info(self):
+    def get_default_input_device_info(self) -> Dict[str, Any]:
         """Return mock input device info."""
         return {'name': 'Mock Input Device'}
 
-    def open(self, *args, **kwargs):
+    def open(self, *args: Any, **kwargs: Any) -> MockStream:
         """Return mock stream."""
         stream = MockStream()
         self.streams.append(stream)
         return stream
     
-    def get_device_count(self):
+    def get_device_count(self) -> int:
+        """Get number of mock devices."""
         return 1
     
-    def get_sample_size(self, format_type):
+    def get_sample_size(self, format_type: int) -> int:
         """Return mock sample size."""
         return 2  # 16-bit audio = 2 bytes
     
-    def terminate(self):
+    def terminate(self) -> None:
         """Mock terminate method."""
         for stream in self.streams:
             stream.close()
 
 
 @pytest.fixture
-def mock_audio():
+def mock_audio() -> Generator[None, None, None]:
     """Mock PyAudio for testing."""
     with patch('pyaudio.PyAudio', return_value=MockPyAudio()):
         yield
 
 
 @pytest.fixture
-def mock_gtk():
+def mock_gtk() -> Generator[MagicMock, None, None]:
     """Mock GTK and AppIndicator3."""
     with patch('gi.repository.Gtk') as mock_gtk, \
          patch('gi.repository.AppIndicator3') as mock_indicator:
@@ -95,10 +123,14 @@ def mock_gtk():
 
 
 @pytest.fixture
-def mock_app(mock_audio, mock_gtk, temp_config_dir):
+def mock_app(
+    mock_audio: None, 
+    mock_gtk: MagicMock, 
+    temp_config_dir: Path
+) -> Any:
     """Create a mock app with all components mocked."""
-    with patch('app.WhisperModel') as mock_model, \
-         patch('app.webrtcvad.Vad') as mock_vad:
+    with patch('whisper_widget.app.WhisperModel') as mock_model, \
+         patch('whisper_widget.app.webrtcvad.Vad') as mock_vad:
         
         # Set up mock model
         mock_model_instance = MagicMock()
@@ -110,7 +142,7 @@ def mock_app(mock_audio, mock_gtk, temp_config_dir):
         mock_vad_instance.is_speech.return_value = True
         
         # Import here to avoid circular imports
-        from app import SpeechToTextApp
+        from whisper_widget.app import SpeechToTextApp
         app = SpeechToTextApp()
         
         # Replace real components with mocks
@@ -122,7 +154,7 @@ def mock_app(mock_audio, mock_gtk, temp_config_dir):
 
 
 @pytest.fixture
-def temp_config_dir():
+def temp_config_dir() -> Generator[Path, None, None]:
     """Create a temporary config directory for testing."""
     with tempfile.TemporaryDirectory() as temp_dir:
         old_home = os.environ.get('HOME')
@@ -133,7 +165,7 @@ def temp_config_dir():
 
 
 @pytest.fixture
-def sample_settings():
+def sample_settings() -> Dict[str, Any]:
     """Return sample settings for testing."""
     return {
         'transcription_mode': 'continuous',
@@ -148,7 +180,7 @@ def sample_settings():
 
 
 @pytest.fixture
-def sample_audio_file():
+def sample_audio_file() -> Generator[str, None, None]:
     """Create a sample WAV file for testing."""
     with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
         # Create a simple WAV file with 1 second of silence
@@ -166,4 +198,19 @@ def sample_audio_file():
                 wf.writeframes(struct.pack('h', 0))
         
         yield temp_file.name
-        os.unlink(temp_file.name) 
+        os.unlink(temp_file.name)
+
+
+@pytest.fixture
+def mock_wake_word_detector(mocker: Any) -> MagicMock:
+    """Fixture to mock the wake word detector."""
+    from openwakeword import Model
+    mock_model = mocker.Mock(spec=Model)
+    mock_model.predict.return_value = [(None, 0.0)]
+    return mock_model
+
+
+@pytest.fixture
+def default_wake_word() -> str:
+    """Fixture providing a default wake word."""
+    return "hey computer" 

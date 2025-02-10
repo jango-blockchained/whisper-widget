@@ -55,4 +55,15 @@ logs/
 
 # OS specific
 .DS_Store
+Thumbs.db
+
+# Type checking
+.mypy_cache/
+
+# Temporary files
+*.swp
+*~
+
+# OS generated files
+.DS_Store
 Thumbs.db 

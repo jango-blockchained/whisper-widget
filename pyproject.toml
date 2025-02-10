@@ -28,4 +28,50 @@ dependencies = [
 
 [project.urls]
 "Homepage" = "https://github.com/yourusername/whisper-widget"
-"Bug Tracker" = "https://github.com/yourusername/whisper-widget/issues" 
+"Bug Tracker" = "https://github.com/yourusername/whisper-widget/issues"
+
+[tool.pytest.ini_options]
+addopts = "-v --cov=whisper_widget --cov-report=term-missing --cov-report=xml:coverage.xml"
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["whisper_widget"]
+omit = [
+    "whisper_widget/__init__.py",
+    "tests/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if self.debug:",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+    "pass",
+    "except ImportError:",
+    "raise ImportError"
+]
+fail_under = 70  # Minimum coverage percentage
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+disallow_untyped_defs = true
+check_untyped_defs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+show_error_codes = true
+strict_optional = true
+
+[[tool.mypy.overrides]]
+module = [
+    "gi.*",
+    "pyaudio.*",
+    "openwakeword.*",
+    "webrtcvad.*",
+    "pynput.*"
+]
+ignore_missing_imports = true 
