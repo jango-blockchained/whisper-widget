@@ -5,9 +5,9 @@ import pathlib
 from typing import Optional, Callable
 import gi
 
-gi.require_version('Gtk', '3.0')
-gi.require_version('WebKit2', '4.0')
-gi.require_version('Gdk', '3.0')
+gi.require_version('Gtk', '4.0')
+gi.require_version('WebKit2', '4.1')
+gi.require_version('Gdk', '4.0')
 from gi.repository import Gtk, WebKit2, Gdk
 
 from .menu import create_app_menu

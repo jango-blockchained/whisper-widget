@@ -16,6 +16,52 @@ sys.path.insert(0, os.path.abspath(
     os.path.join(os.path.dirname(__file__), '..')
 ))
 
+# Mock GTK and related modules before they are imported
+mock_gtk = MagicMock()
+mock_gdk = MagicMock()
+mock_webkit = MagicMock()
+mock_gio = MagicMock()
+mock_glib = MagicMock()
+mock_app_indicator = MagicMock()
+
+sys.modules['gi'] = MagicMock()
+sys.modules['gi.repository'] = MagicMock()
+sys.modules['gi.repository.Gtk'] = mock_gtk
+sys.modules['gi.repository.Gdk'] = mock_gdk
+sys.modules['gi.repository.WebKit2'] = mock_webkit
+sys.modules['gi.repository.Gio'] = mock_gio
+sys.modules['gi.repository.GLib'] = mock_glib
+sys.modules['gi.repository.AppIndicator3'] = mock_app_indicator
+
+# Set up common mock objects
+mock_gtk.ApplicationWindow = MagicMock
+mock_gtk.Application = MagicMock
+mock_gtk.Box = MagicMock
+mock_gtk.CssProvider = MagicMock
+mock_gtk.StyleContext = MagicMock
+mock_gtk.GestureClick = MagicMock
+mock_gtk.GestureDrag = MagicMock
+mock_gtk.PopoverMenu = MagicMock
+mock_gtk.Orientation = MagicMock
+mock_gtk.STYLE_PROVIDER_PRIORITY_APPLICATION = 1
+
+mock_gdk.Display = MagicMock
+mock_gdk.Rectangle = MagicMock
+mock_gdk.RGBA = MagicMock
+
+mock_webkit.WebView = MagicMock
+
+mock_gio.Menu = MagicMock
+mock_gio.SimpleAction = MagicMock
+mock_gio.ApplicationFlags = MagicMock
+mock_gio.ApplicationFlags.FLAGS_NONE = 0
+
+mock_glib.Variant = MagicMock
+mock_glib.Variant.new_boolean = lambda x: x
+
+mock_app_indicator.Indicator = MagicMock
+mock_app_indicator.IndicatorCategory = MagicMock
+mock_app_indicator.IndicatorCategory.APPLICATION_STATUS = 1
 
 class MockStream:
     """Mock audio stream for testing."""
