@@ -56,8 +56,8 @@ mock_gio.SimpleAction = MagicMock
 mock_gio.ApplicationFlags = MagicMock
 mock_gio.ApplicationFlags.FLAGS_NONE = 0
 
-mock_glib.Variant = MagicMock
-mock_glib.Variant.new_boolean = lambda x: x
+mock_glib.Variant = MagicMock()
+mock_glib.Variant.new_boolean = MagicMock(side_effect=lambda x: x)
 
 mock_app_indicator.Indicator = MagicMock
 mock_app_indicator.IndicatorCategory = MagicMock
@@ -109,7 +109,21 @@ class MockPyAudio:
     
     def get_default_input_device_info(self) -> Dict[str, Any]:
         """Return mock input device info."""
-        return {'name': 'Mock Input Device'}
+        return {
+            'name': 'Mock Input Device',
+            'maxInputChannels': 2,
+            'index': 0,
+            'defaultSampleRate': 44100
+        }
+
+    def get_device_info_by_index(self, index: int) -> Dict[str, Any]:
+        """Return mock device info for the given index."""
+        return {
+            'name': f'Mock Device {index}',
+            'maxInputChannels': 2 if index == 0 else 0,
+            'defaultSampleRate': 44100,
+            'index': index
+        }
 
     def open(self, *args: Any, **kwargs: Any) -> MockStream:
         """Return mock stream."""
@@ -142,7 +156,7 @@ def mock_audio() -> Generator[None, None, None]:
 def mock_gtk() -> Generator[MagicMock, None, None]:
     """Mock GTK and AppIndicator3."""
     with patch('gi.repository.Gtk') as mock_gtk, \
-         patch('gi.repository.AppIndicator3') as mock_indicator:
+         patch('gi.repository.AyatanaAppIndicator3') as mock_indicator:
         # Create mock menu items
         mock_menu = MagicMock()
         mock_menu_item = MagicMock()
@@ -164,6 +178,7 @@ def mock_gtk() -> Generator[MagicMock, None, None]:
         mock_indicator.Indicator.new.return_value = MagicMock()
         mock_indicator.IndicatorCategory = MagicMock()
         mock_indicator.IndicatorStatus = MagicMock()
+        mock_indicator.IndicatorStatus.ACTIVE = 1
         
         yield mock_gtk
 

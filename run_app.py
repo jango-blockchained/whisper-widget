@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
 
+# Set GTK version before ANY other imports
+import gi
+gi.require_version('Gtk', '3.0')
+gi.require_version('Gdk', '3.0')
+gi.require_version('WebKit2', '4.1')
+
 import os
 import sys
 import warnings
@@ -24,12 +30,13 @@ def main():
     # Initialize the app with default settings
     app = SpeechToTextApp(
         transcription_mode="local",
-        output_mode="continuous",
-        model_size="base",
-        language="en",
+        output_mode="clipboard",
+        model_size="large-v3-turbo",
+        language="de",
         vad_sensitivity=3,
         auto_detect_speech=True,
-        add_punctuation=True
+        add_punctuation=True,
+        use_tray=True  # Disable system tray by default
     )
     
     # Run the application

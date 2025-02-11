@@ -1,5 +1,7 @@
 # Whisper Widget
 
+[![Whisper Widget CI](https://github.com/jango-blockchained/whisper-widget/actions/workflows/ci.yml/badge.svg)](https://github.com/jango-blockchained/whisper-widget/actions/workflows/ci.yml)
+
 A Linux system tray widget for real-time speech-to-text transcription using either local Whisper models (via faster-whisper) or OpenAI's API.
 
 ## Features
@@ -18,16 +20,19 @@ A Linux system tray widget for real-time speech-to-text transcription using eith
 - Linux system with audio input
 - GTK 4.0+ and GObject Introspection
 - PortAudio development files (for PyAudio)
+- Ayatana AppIndicator3 (for system tray icon)
 
 ## Installation
 
 1. Install system dependencies:
 ```bash
 # For Ubuntu/Debian:
-sudo apt-get install python3-dev portaudio19-dev python3-venv libgtk-4-dev gobject-introspection
+sudo apt-get install python3-dev portaudio19-dev python3-venv libgtk-4-dev \
+    gobject-introspection libayatana-appindicator3-dev
 
 # For Fedora:
-sudo dnf install python3-devel portaudio-devel python3-virtualenv gtk4-devel gobject-introspection-devel
+sudo dnf install python3-devel portaudio-devel python3-virtualenv gtk4-devel \
+    gobject-introspection-devel libayatana-appindicator3-devel
 ```
 
 2. Create and activate a virtual environment:

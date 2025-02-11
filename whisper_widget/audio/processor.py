@@ -2,6 +2,7 @@
 
 import logging
 import threading
+import time
 import wave
 from typing import Optional, Callable
 import numpy as np
@@ -29,6 +30,7 @@ class AudioProcessor:
         self.chunk_size = int(sample_rate * chunk_duration)
         self.vad_sensitivity = vad_sensitivity
         self.on_speech_detected = on_speech_detected
+        self._level = 0.0  # Current audio level
 
         # Audio processing settings
         self.settings = {
@@ -52,6 +54,11 @@ class AudioProcessor:
 
         # Initialize audio components
         self.init_audio()
+
+    @property
+    def level(self) -> float:
+        """Get the current audio level (0.0 to 1.0)."""
+        return self._level
 
     def init_audio(self) -> None:
         """Initialize audio components with error handling."""
@@ -186,12 +193,12 @@ class AudioProcessor:
         """Main audio processing loop."""
         error_count = 0
         max_errors = 5
-        last_error_time = 0
+        last_error_time = time.time()
         error_reset_interval = 60
 
         while self.is_recording:
             try:
-                current_time = threading.Event().time()
+                current_time = time.time()
                 if current_time - last_error_time > error_reset_interval:
                     error_count = 0
 
@@ -225,7 +232,7 @@ class AudioProcessor:
 
             except Exception as e:
                 error_count += 1
-                last_error_time = threading.Event().time()
+                last_error_time = time.time()
                 logging.error(f"Error in audio processing loop: {e}")
                 
                 if error_count >= max_errors:
@@ -241,6 +248,11 @@ class AudioProcessor:
         try:
             # Convert to numpy array for analysis
             audio_data = np.frombuffer(audio_chunk, dtype=np.int16)
+
+            # Update audio level
+            max_value = np.iinfo(np.int16).max
+            rms = np.sqrt(np.mean(audio_data**2))
+            self._level = min(1.0, rms / (max_value * 0.1))  # Scale to 0.0-1.0
 
             # Check audio quality
             if self._check_audio_quality(audio_data):
@@ -315,7 +327,7 @@ class AudioProcessor:
     ) -> None:
         """Update speech detection state and handle transitions."""
         try:
-            current_time = threading.Event().time()
+            current_time = time.time()
             
             if is_speech:
                 if not self.is_speech:  # Speech start
