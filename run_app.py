@@ -31,8 +31,8 @@ def main():
     app = SpeechToTextApp(
         transcription_mode="local",
         output_mode="clipboard",
-        model_size="large-v3-turbo",
-        language="de",
+        model_size="base",
+        language="en",
         vad_sensitivity=3,
         auto_detect_speech=True,
         add_punctuation=True,

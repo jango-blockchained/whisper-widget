@@ -17,6 +17,7 @@
             display: flex;
             justify-content: center;
             align-items: center;
+            background-color: transparent;
         }
     </style>
 </head>
@@ -54,15 +55,19 @@
             ratio: 1,
             speed: 0.2,
             amplitude: 1,
-            frequency: 6,
-            cover: true,
+            frequency: 4,
+            cover: false,
             autostart: true,
             pixelDepth: 0.02,
             lerpSpeed: 0.1,
         });
 
+        // Initial state
+        siriWave.setAmplitude(0.3);
+        siriWave.setSpeed(0.1);
+
         // Function to update wave amplitude with easing
-        function updateAmplitude(value, duration = 500) {
+        function updateAmplitude(value, duration = 300) {
             const startAmp = siriWave.amplitude;
             const startTime = Date.now();
 
@@ -86,7 +91,7 @@
         }
 
         // Function to update wave speed with easing
-        function updateSpeed(value, duration = 500) {
+        function updateSpeed(value, duration = 300) {
             const startSpeed = siriWave.speed;
             const startTime = Date.now();
 
@@ -144,7 +149,7 @@
                 switch (data.value) {
                     case 'recording':
                         // Active recording state: high amplitude, faster speed
-                        updateAmplitude(1, 300);
+                        updateAmplitude(0.8, 300);
                         updateSpeed(0.3, 300);
                         if (pulseInterval) {
                             clearInterval(pulseInterval);
@@ -152,15 +157,15 @@
                         break;
 
                     case 'thinking':
-                        // Thinking state: pulsing wave
-                        updateSpeed(0.15, 500);
-                        startPulse(0.3, 0.7, 1000);
+                        // Thinking state: medium amplitude, medium speed
+                        updateAmplitude(0.5, 500);
+                        updateSpeed(0.2, 500);
                         break;
 
                     case 'idle':
                         // Idle state: gentle, slow movement
-                        updateAmplitude(0.15, 800);
-                        updateSpeed(0.05, 800);
+                        updateAmplitude(0.3, 800);
+                        updateSpeed(0.1, 800);
                         if (pulseInterval) {
                             clearInterval(pulseInterval);
                         }
@@ -196,10 +201,6 @@
             siriWave.height = window.innerHeight;
             siriWave.resize();
         });
-
-        // Initial state
-        updateAmplitude(0.15, 0);
-        updateSpeed(0.05, 0);
     </script>
 </body>
 

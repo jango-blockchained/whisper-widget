@@ -31,37 +31,38 @@ def create_app_menu(app: Gtk.Application) -> Gio.Menu:
     detect_menu = _create_detection_menu(app)
     menu.append_submenu('Speech Detection', detect_menu)
     
-    # Add toggles
+    # Add toggles with action handlers
     menu.append('Auto-detect Speech', 'app.auto_detect')
-    app.add_action(
-        Gio.SimpleAction.new_stateful(
-            'auto_detect',
-            None,
-            GLib.Variant.new_boolean(True)
-        )
+    auto_detect_action = Gio.SimpleAction.new_stateful(
+        'auto_detect',
+        None,
+        GLib.Variant.new_boolean(True)
     )
+    auto_detect_action.connect('change-state', _on_auto_detect_change)
+    app.add_action(auto_detect_action)
     
     menu.append('Add Punctuation', 'app.add_punct')
-    app.add_action(
-        Gio.SimpleAction.new_stateful(
-            'add_punct',
-            None,
-            GLib.Variant.new_boolean(True)
-        )
+    add_punct_action = Gio.SimpleAction.new_stateful(
+        'add_punct',
+        None,
+        GLib.Variant.new_boolean(True)
     )
+    add_punct_action.connect('change-state', _on_add_punct_change)
+    app.add_action(add_punct_action)
     
     menu.append('Wake Word Detection', 'app.wake_word_toggle')
-    app.add_action(
-        Gio.SimpleAction.new_stateful(
-            'wake_word_toggle',
-            None,
-            GLib.Variant.new_boolean(False)
-        )
+    wake_word_action = Gio.SimpleAction.new_stateful(
+        'wake_word_toggle',
+        None,
+        GLib.Variant.new_boolean(False)
     )
+    wake_word_action.connect('change-state', _on_wake_word_change)
+    app.add_action(wake_word_action)
     
     # Add quit option
     menu.append('Quit', 'app.quit')
     quit_action = Gio.SimpleAction.new('quit', None)
+    quit_action.connect('activate', _on_quit)
     app.add_action(quit_action)
     
     return menu
@@ -207,4 +208,35 @@ def _create_detection_menu(app: Gtk.Application) -> Gio.Menu:
         duration_menu.append_submenu(label, submenu)
     menu.append_submenu('Duration Settings', duration_menu)
     
-    return menu 
+    return menu
+
+
+def _on_auto_detect_change(action: Gio.SimpleAction, value: GLib.Variant) -> None:
+    """Handle auto-detect setting change."""
+    action.set_state(value)
+    app = Gtk.Application.get_default()
+    if app and hasattr(app, 'window'):
+        app.window.auto_detect_speech = value.get_boolean()
+
+
+def _on_add_punct_change(action: Gio.SimpleAction, value: GLib.Variant) -> None:
+    """Handle add punctuation setting change."""
+    action.set_state(value)
+    app = Gtk.Application.get_default()
+    if app and hasattr(app, 'window'):
+        app.window.add_punctuation = value.get_boolean()
+
+
+def _on_wake_word_change(action: Gio.SimpleAction, value: GLib.Variant) -> None:
+    """Handle wake word setting change."""
+    action.set_state(value)
+    app = Gtk.Application.get_default()
+    if app and hasattr(app, 'window'):
+        app.window.wake_word_enabled = value.get_boolean()
+
+
+def _on_quit(action: Gio.SimpleAction, parameter: None) -> None:
+    """Handle quit action."""
+    app = Gtk.Application.get_default()
+    if app:
+        app.quit() 

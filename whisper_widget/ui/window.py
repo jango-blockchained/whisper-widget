@@ -29,10 +29,12 @@ class WhisperWindow(Gtk.ApplicationWindow):
         
         # Set window properties
         self.set_title("Whisper Widget")
-        self.set_default_size(400, 300)
+        self.set_default_size(400, 100)  # Reduced height
         self.set_decorated(False)  # Make window borderless
         self.set_app_paintable(True)  # Enable transparency
         self.set_position(Gtk.WindowPosition.CENTER)
+        self.set_type_hint(Gdk.WindowTypeHint.NORMAL)  # Changed to NORMAL for better dragging
+        self.set_keep_above(True)  # Ensure window stays on top
         
         # Store callbacks
         self.on_recording_start = on_recording_start
@@ -56,10 +58,19 @@ class WhisperWindow(Gtk.ApplicationWindow):
         
         css_provider = Gtk.CssProvider()
         css = b"""
+            window {
+                background-color: rgba(0, 0, 0, 0.2);
+            }
+            box {
+                background-color: rgba(0, 0, 0, 0.2);
+            }
+            webview {
+                background-color: rgba(0, 0, 0, 0.2);
+            }
             .transparent {
-                background-color: rgba(0, 0, 0, 0);
+                background-color: rgba(0, 0, 0, 0.2);
                 background-image: none;
-                border-color: rgba(0, 0, 0, 0);
+                border: none;
             }
         """
         css_provider.load_from_data(css)
@@ -84,13 +95,16 @@ class WhisperWindow(Gtk.ApplicationWindow):
         
         # Create WebView for visualization with transparent background
         self.webview = WebKit2.WebView()
-        self.webview.set_background_color(Gdk.RGBA(0, 0, 0, 0))
+        self.webview.set_background_color(Gdk.RGBA(0, 0, 0, 0.2))
         self.webview.set_size_request(400, 100)
         
-        # Set WebView background to be transparent
+        # Set WebView settings
         settings = WebKit2.Settings()
-        settings.set_enable_webaudio(True)
-        settings.set_enable_webgl(True)
+        settings.set_enable_webaudio(False)  # Disable audio
+        settings.set_enable_webgl(False)  # Disable WebGL
+        settings.set_enable_accelerated_2d_canvas(True)
+        settings.set_enable_javascript(True)
+        settings.set_enable_smooth_scrolling(False)  # Disable smooth scrolling
         self.webview.set_settings(settings)
         
         # Load visualization HTML
@@ -107,6 +121,13 @@ class WhisperWindow(Gtk.ApplicationWindow):
 
     def _setup_events(self) -> None:
         """Set up window event handlers."""
+        # Enable motion events for dragging
+        self.add_events(
+            Gdk.EventMask.BUTTON_PRESS_MASK |
+            Gdk.EventMask.BUTTON_RELEASE_MASK |
+            Gdk.EventMask.POINTER_MOTION_MASK
+        )
+        
         # Right-click for menu
         self.connect('button-press-event', self._on_button_press)
         
@@ -137,29 +158,32 @@ class WhisperWindow(Gtk.ApplicationWindow):
     def _on_drag_begin(self, widget: Gtk.Widget, event: Gdk.EventButton) -> bool:
         """Start window dragging."""
         if event.button == 1:  # Left mouse button
-            self._drag_start_pos = (event.x_root, event.y_root)
-            self._window_pos = self.get_position()
+            # Store initial position
+            self._drag_start_x = event.x_root
+            self._drag_start_y = event.y_root
+            self._window_x, self._window_y = self.get_position()
             return True
         return False
 
     def _on_drag_update(self, widget: Gtk.Widget, event: Gdk.EventMotion) -> bool:
         """Update window position during drag."""
-        if hasattr(self, '_drag_start_pos') and hasattr(self, '_window_pos'):
-            start_x, start_y = self._drag_start_pos
-            win_x, win_y = self._window_pos
-            
-            dx = event.x_root - start_x
-            dy = event.y_root - start_y
-            
-            self.move(int(win_x + dx), int(win_y + dy))
+        if hasattr(self, '_drag_start_x'):
+            # Calculate new position
+            dx = event.x_root - self._drag_start_x
+            dy = event.y_root - self._drag_start_y
+            new_x = int(self._window_x + dx)
+            new_y = int(self._window_y + dy)
+            self.move(new_x, new_y)
             return True
         return False
 
     def _on_drag_end(self, widget: Gtk.Widget, event: Gdk.EventButton) -> bool:
         """End window dragging."""
-        if hasattr(self, '_drag_start_pos'):
-            del self._drag_start_pos
-            del self._window_pos
+        if hasattr(self, '_drag_start_x'):
+            del self._drag_start_x
+            del self._drag_start_y
+            del self._window_x
+            del self._window_y
             return True
         return False
 

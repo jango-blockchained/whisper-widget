@@ -197,8 +197,7 @@ class AudioProcessor:
         error_reset_interval = 60
 
         while self.is_recording:
-            try:
-                current_time = time.time()
+            try:d
                 if current_time - last_error_time > error_reset_interval:
                     error_count = 0
 

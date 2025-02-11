@@ -17,6 +17,7 @@ from typing import Any, Optional
 import pyperclip
 from pynput.keyboard import Key, KeyCode, Listener as KeyboardListener
 import numpy as np
+import sys
 
 # Import GTK components
 from gi.repository import (
@@ -31,7 +32,6 @@ from .audio.transcriber import Transcriber
 from .ui.window import WhisperWindow
 from .utils.audio_utils import check_microphone_access
 from .ui.menu import create_app_menu
-from .config import Config
 
 # Check if system tray is available
 HAS_INDICATOR = False
@@ -65,6 +65,18 @@ STATUS_COLORS = {
     'ERROR': 'red'
 }
 
+# ANSI control sequences
+CONTROL = {
+    'clear_screen': '\033[2J',
+    'clear_line': '\033[K',
+    'move_up': '\033[1A',
+    'move_to_bottom': '\033[{};1H',
+    'save_position': '\033[s',
+    'restore_position': '\033[u',
+    'hide_cursor': '\033[?25l',
+    'show_cursor': '\033[?25h'
+}
+
 def color_text(text: str, color: str, bold: bool = False) -> str:
     """Add ANSI color codes to text."""
     color_code = COLORS.get(color, '')
@@ -92,20 +104,42 @@ def create_level_bar(level: float, width: int = 20) -> str:
     else:
         return color_text(bar, 'green')
 
+def setup_cli_interface() -> None:
+    """Set up the fixed CLI interface."""
+    # Clear screen and hide cursor
+    print(CONTROL['clear_screen'], end='')
+    print(CONTROL['hide_cursor'], end='')
+    # Print initial header
+    print_status_header()
+
+def cleanup_cli_interface() -> None:
+    """Clean up the CLI interface."""
+    print(CONTROL['show_cursor'], end='')
+
 def print_status_header() -> None:
     """Print the status header with column names."""
-    print("\n" + color_text("=" * 100, 'blue', bold=True))
+    # Save cursor position
+    print(CONTROL['save_position'], end='')
+    # Move to bottom of terminal and clear lines
+    print(CONTROL['move_to_bottom'].format(terminal_height() - 4), end='')
+    print(CONTROL['clear_line'], end='')
+    
+    # Print header with better spacing
+    print(color_text("=" * 100, 'blue', bold=True))
+    print(color_text("Speech-to-Text Status Monitor", 'cyan', bold=True).center(100))
+    print(color_text("-" * 100, 'blue', bold=True))
     header = (
-        f"{color_text('Time', 'white', True):12} | "
-        f"{color_text('Status', 'white', True):10} | "
-        f"{color_text('Duration', 'white', True):10} | "
-        f"{color_text('Level', 'white', True):22} | "
-        f"{color_text('Mode', 'white', True):8} | "
+        f"{color_text('Time', 'white', True):12} │ "
+        f"{color_text('Status', 'white', True):12} │ "
+        f"{color_text('Duration', 'white', True):10} │ "
+        f"{color_text('Level', 'white', True):22} │ "
+        f"{color_text('Mode', 'white', True):10} │ "
         f"{color_text('Details', 'white', True)}"
     )
     print(header)
-    print(color_text("-" * 100, 'blue', bold=True))
-
+    print(color_text("=" * 100, 'blue', bold=True))
+    # Restore cursor position
+    print(CONTROL['restore_position'], end='')
 
 def print_status_line(
     status: str,
@@ -115,6 +149,12 @@ def print_status_line(
     level: float = 0.0
 ) -> None:
     """Print a status line with current time and information."""
+    # Save cursor position
+    print(CONTROL['save_position'], end='')
+    # Move to bottom of terminal
+    print(CONTROL['move_to_bottom'].format(terminal_height()), end='')
+    print(CONTROL['clear_line'], end='')
+    
     current_time = datetime.now().strftime("%H:%M:%S")
     duration_str = f"{duration:.1f}s" if duration > 0 else ""
     
@@ -123,18 +163,31 @@ def print_status_line(
     
     # Color the status
     status_color = STATUS_COLORS.get(status, 'white')
-    colored_status = color_text(status.ljust(10), status_color, True)
+    colored_status = color_text(status.ljust(12), status_color, True)
     
     # Format the line with proper padding
     time_str = color_text(current_time.ljust(12), 'cyan')
     duration_str = color_text(duration_str.ljust(10), 'yellow')
-    mode_str = color_text(mode.ljust(8), 'magenta')
+    mode_str = color_text(mode.ljust(10), 'magenta')
     details_str = color_text(details, 'white')
     
-    # Build the line
-    line = f"{time_str} | {colored_status} | {duration_str} | {level_bar} | {mode_str} | {details_str}"
-    print(line)
+    # Build and print the line with better separators
+    line = (
+        f"{time_str} │ {colored_status} │ {duration_str} │ "
+        f"{level_bar} │ {mode_str} │ {details_str}"
+    )
+    print(line, end='')
+    
+    # Restore cursor position
+    print(CONTROL['restore_position'], end='')
+    sys.stdout.flush()
 
+def terminal_height() -> int:
+    """Get terminal height."""
+    try:
+        return os.get_terminal_size().lines
+    except (AttributeError, OSError):
+        return 24  # Fallback height
 
 class SpeechToTextApp:
     """Main application class."""
@@ -153,6 +206,9 @@ class SpeechToTextApp:
         use_tray: bool = True,
     ) -> None:
         """Initialize the application."""
+        # Set up CLI interface
+        setup_cli_interface()
+        
         # Print initial header
         print(color_text("\nWhisper Widget - Speech-to-Text Application", 'cyan', True))
         print(color_text("=" * 42, 'blue'))
@@ -405,6 +461,7 @@ class SpeechToTextApp:
             self.stop_recording()
         if self.keyboard:
             self.keyboard.stop()
+        cleanup_cli_interface()
         self.app.quit()
 
     def run(self) -> None:
